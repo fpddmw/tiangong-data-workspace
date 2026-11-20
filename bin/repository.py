@@ -37,6 +37,8 @@ LOCAL_PARTS = {
     "__pycache__", ".playwright-mcp", ".npm", ".pnpm-store", "local-environment", "worker-target",
     "developer-toolchain",
 }
+SKILL_ENV_TEMPLATE = ".agents/skills/document-granular-decompose/assets/config.example.env"
+SKILL_REQUIREMENTS_LOCK = ".agents/skills/academic-paper-download/requirements.lock"
 LOCAL_ROOTS = {"tmp"}
 LOCAL_FILES = {".runtime.initialize.json"}
 PRIVATE_FILE_NAMES = {"session.json", "sessions.json", "private-session.json", "credentials.json", "oauth.json", "auth.json",
@@ -162,7 +164,7 @@ def forbidden_path(relative, reviewed_template=False):
     parts = PurePosixPath(relative).parts
     if not parts or relative.startswith("/") or ".." in parts or ".git" in parts:
         return "invalid-path"
-    if any(part.endswith(".env") for part in parts):
+    if relative != SKILL_ENV_TEMPLATE and any(part.endswith(".env") for part in parts):
         return "environment-file"
     if any(part == ".env" or part.startswith(".env.") for part in parts):
         if relative != ".env.example" and not (reviewed_template and reviewed_environment_template(relative)):
@@ -170,7 +172,8 @@ def forbidden_path(relative, reviewed_template=False):
     if ".control" in parts:
         if relative not in CONTROL_ORIGINALS and (len(parts) != 2 or parts[0] != ".control" or parts[1] not in CONTROL_FILES):
             return "local-state"
-    if any(part in LOCAL_PARTS for part in parts) or parts[0] in LOCAL_ROOTS or relative in LOCAL_FILES:
+    local_parts = parts[1:] if len(parts) > 2 and parts[:2] == (".agents", "skills") else parts
+    if any(part in LOCAL_PARTS for part in local_parts) or parts[0] in LOCAL_ROOTS or relative in LOCAL_FILES:
         return "local-state"
     directories = parts[:-1]
     if ("pydeps" in directories or parts[-1].startswith("~$")
@@ -190,7 +193,8 @@ def forbidden_path(relative, reviewed_template=False):
                    for parent, child, leaf in zip(directories, directories[1:], directories[2:]))):
         return "local-state"
     if any(part.lower() in PRIVATE_FILE_NAMES
-           or (NATIVE_SUFFIX.search(part) and part not in DEPENDENCY_LOCK_FILES)
+           or (NATIVE_SUFFIX.search(part) and part not in DEPENDENCY_LOCK_FILES
+               and relative != SKILL_REQUIREMENTS_LOCK)
            or part.lower().endswith((".pem", ".key")) for part in parts):
         return "local-state"
     return None
@@ -406,8 +410,16 @@ def inspect_candidate(relative, root, candidates, selected, lfs, reviewed, ignor
             if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                 issue(relative, "file-changed-during-check")
                 return total_bytes, issues
-            if relative == ".env.example":
+            if relative in {".env.example", SKILL_ENV_TEMPLATE}:
                 template = candidate.read(MAX_FILE_BYTES + 1)
+                if relative == SKILL_ENV_TEMPLATE:
+                    template = template.replace(
+                        b"UNSTRUCTURED_AUTH_TOKEN=replace_with_fastapi_bearer_token",
+                        b"UNSTRUCTURED_AUTH_TOKEN=",
+                    ).replace(
+                        b"UNSTRUCTURED_API_BASE_URL=https://your-unstructured-host:7770",
+                        b"UNSTRUCTURED_API_BASE_URL=",
+                    )
                 if not empty_environment_template(template):
                     issue(relative, "nonempty-environment-template")
                 candidate.seek(0)

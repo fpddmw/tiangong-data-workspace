@@ -1,0 +1,57 @@
+{
+  "description": "Retain native tool failures and provide bounded complete-block task context; original evidence and permissions remain authoritative.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"$(git rev-parse --show-toplevel)/bin/harness_hook.py\"",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$p=Get-Item -LiteralPath .; while($p -and -not (Test-Path -LiteralPath (Join-Path $p.FullName 'bin\\harness-hook.ps1'))){$p=$p.Parent}; if(-not $p){exit 1}; & (Join-Path $p.FullName 'bin\\harness-hook.ps1')\"",
+            "timeout": 20,
+            "additionalContextLimit": 18000,
+            "statusMessage": "登记实际工具失败"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"$(git rev-parse --show-toplevel)/bin/harness_context_hook.py\"",
+            "timeout": 2,
+            "additionalContextLimit": 0,
+            "statusMessage": "读取当前责任与完整余项入口"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|clear|compact)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"$(git rev-parse --show-toplevel)/bin/harness_context_hook.py\"",
+            "timeout": 2,
+            "additionalContextLimit": 0,
+            "statusMessage": "读取当前责任与完整余项入口"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -B \"$(git rev-parse --show-toplevel)/bin/harness_context_hook.py\"",
+            "timeout": 2,
+            "additionalContextLimit": 0,
+            "statusMessage": "读取当前责任与完整余项入口"
+          }
+        ]
+      }
+    ]
+  }
+}

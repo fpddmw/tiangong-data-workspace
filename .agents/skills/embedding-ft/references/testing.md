@@ -1,0 +1,38 @@
+# Testing & debugging
+
+## Preferred smoke test
+```bash
+TIANGONG_LCA_API_BASE_URL="https://example.supabase.co/functions/v1" \
+TIANGONG_LCA_SUPABASE_PUBLISHABLE_KEY="<publishable-key>" \
+TIANGONG_LCA_OAUTH_CLIENT_ID="<public-oauth-client-id>" \
+node scripts/run-embedding-ft.mjs
+```
+
+## Dry run (request preview)
+```bash
+TIANGONG_LCA_API_BASE_URL="https://example.supabase.co/functions/v1" \
+TIANGONG_LCA_SUPABASE_PUBLISHABLE_KEY="<publishable-key>" \
+TIANGONG_LCA_OAUTH_CLIENT_ID="<public-oauth-client-id>" \
+node scripts/run-embedding-ft.mjs --dry-run
+```
+
+## Direct CLI equivalent
+```bash
+tiangong-lca \
+  admin embedding-run \
+  --input ./assets/example-jobs.json \
+  --base-url "https://example.supabase.co/functions/v1" \
+  --dry-run
+```
+
+Use `TIANGONG_LCA_CLI_DIR=/path/to/tiangong-lca-cli node scripts/run-embedding-ft.mjs ...` only when validating an unpublished local CLI working tree.
+
+## Checklist
+- Response contains `completedJobs` and `failedJobs`.
+- Logs include `processing embedding job` and successful update messages.
+- Target row updates embedding vector and `embedding_ft_at`.
+
+## Failure triage
+- `400`: body is not a valid job array or field type mismatch.
+- `500`: SageMaker request failure or unsupported embedding response shape.
+- Missing row/content: check `id`, `version`, and `contentFunction`; job is acked to avoid retry loops.

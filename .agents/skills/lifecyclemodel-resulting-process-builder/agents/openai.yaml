@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Generate Model result groups'
+  short_description: 'Generate, inspect and save Model result groups using installed CLI commands.'
+  default_prompt: 'Use $lifecyclemodel-resulting-process-builder. Check the installed CLI help, generate a local candidate when requested, and use the native result-group operation for authorized group saves. Report the CLI receipt and complete readback separately. Use the original recovery input when the outcome is unknown.'

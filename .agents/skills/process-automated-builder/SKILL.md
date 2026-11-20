@@ -1,0 +1,39 @@
+---
+name: process-automated-builder
+description: Author evidence-supported canonical Process datasets using current CLI contracts, validation and explicit writes; preserve scientific meaning and existing managed Foundry task boundaries.
+---
+
+# Process authoring
+
+The Agent owns source research, scientific interpretation, unit-of-analysis selection and candidate content. CLI owns atomic contracts, validation and authorized persistence. Use this Skill for evidence-supported Process authoring, not a hidden CLI production scheduler. Registered Foundry tasks continue through the returned work items/actions and retain the selected runtime.
+
+1. Establish the functional unit, system boundary, reference Flow/property/unit and amount. Resolve whether the source describes a production operation, service, average or aggregate before writing exchanges.
+2. Retrieve field-level evidence with bounded queries and authoritative sources. Record the source location, units, period, geography, conversion and limitations in ordinary caller-owned notes. Unknown facts remain explicit; there is no CLI evidence-search queue or author-plan format to manufacture.
+3. Inspect `dataset process contract`, discover existing candidates with `search` and exact `get`, and decide whether an existing identity already fits. Create a new identity only for a distinct object; do not generate an identity merely because a task resumed.
+4. Author canonical Process JSON from the evidence. Distinguish intended applications, scientific use advice and technological applicability; draft/review state is not the data's intended scientific purpose. Preserve real identifiers and boundary/proxy restrictions.
+5. Run `dataset process validate --input process.json --json`, inspect its validation layers and not-checked scope, and inspect exact reference evidence. Edit or apply a deliberate `patch`, then compare with `diff` and validate again. No automatic default unit, emissions, annual volume or provider weights may substitute for evidence.
+6. Use distinct `create`/`save` request envelopes and current preconditions for an authorized write. A local draft file is not a persisted dataset. Review submission and Release publication are separate. Read exact content after confirmed writes; unknown effects use original-intent recovery.
+
+`run-process-automated-builder.mjs` forwards current `dataset process <action>` arguments. Native operations include contract, search/get, validate, diff, patch, create/save and statistics. It does not implement auto-build/resume/publish queues or supply missing authoring facts. Read the supported operation's help for current input, output and failure semantics.
+
+Names, descriptions and comments state domain facts only; operational attempts and repair history belong in task records.
+
+## Complete revision and evidence
+
+When an amount, unit, direction or denominator changes, recompute the affected exchanges and totals from the same candidate. Reconcile meanAmount, resultingAmount and variables with their actual contract. Update the complete affected explanation, existing language versions, tables, source references and report pointers together. Inspect residual sentences that may still describe the old boundary. Reuse independent review opinions that remain applicable; return substantive scientific changes to the reviewer and keep iterating on this same candidate.
+
+Annual production requires explicit annual quantity, reference unit and period evidence. When unknown, use the representation supported by the installed contract and disclose the evidence gap in the scientific notes; a normalized reference exchange does not prove annual production. The current validator does not establish scientific adequacy, bilingual equivalence or full quantitative consistency (CLI issue 425). Use evidence and explicit calculations for those judgments.
+
+Read `references/ilcd_method_guardrails.md` and the naming rules when relevant. Existing managed Foundry tasks retain their own runtime and returned actions. This Skill supports autonomous local authoring and does not impose Foundry repair, calculation or publication procedures on an ordinary candidate task.
+
+## Runtime and authorization
+
+Call `tiangong-lca` directly and read the needed command’s `--help --json`; preserve its current input format. Local validation and content processing do not require login. Before remote reads run `tiangong-lca auth status --json`; when login is required, hand `auth login` to a human in a trusted terminal. Never request a password, code or token. Use `auth doctor-auth --json` before authorized account-sensitive writes. Separate accounts with the caller's private `TIANGONG_LCA_SESSION_FILE`; never read its credentials in a Skill.
+
+Read the shared result envelope and actual `completeness`, validation layers and artifacts. A completed invocation may report invalid content. Missing/invisible records are not permission to create a replacement. `create` and `save` are distinct intentions; a failed save never becomes a create, and an unknown write uses its original request/intent recovery, never a new request or replay. Local files, queries, validation and candidate generation do not publish or submit review.
+
+## CLI selection
+
+Call `tiangong-lca` directly. Read the needed command’s `--help --json` before constructing inputs. Optional Node wrappers use the same PATH command; `--cli-command <executable>` selects a custom path. If unavailable, follow the official CLI installation guidance. Existing managed tasks continue through their owner-returned actions.
+
+If `tiangong-lca` is unavailable, follow its official installation instructions. Source development and controlled runtime settings are optional environment choices; ordinary use requires no identity file or digest.

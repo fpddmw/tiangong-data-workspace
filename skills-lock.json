@@ -1,0 +1,1718 @@
+{
+  "schema": "data-workspace.skills-lock.v1",
+  "source": {
+    "repository": "tiangong-lca/agent-skills",
+    "commit": "e7e4c7d94b6befe879a7c8b7e64f694282a31614"
+  },
+  "additional_sources": [
+    {
+      "repository": "tiangong-ai/agent-skills",
+      "commit": "25db71e95c2650ec6279529f236e41fb5ef6cb97"
+    }
+  ],
+  "installer": "Codex skill-installer/install-skill-from-github.py",
+  "scope": "project",
+  "skills": [
+    {
+      "name": "academic-paper-download",
+      "path": ".agents/skills/academic-paper-download",
+      "source": "tiangong-ai/agent-skills",
+      "files": [
+        {
+          "path": "LICENSE.paper-fetch.txt",
+          "bytes": 1069,
+          "sha256": "0d43b46456eda48a9054fbfa915ac80e150f5db5cf90714eda710c02e1df461a",
+          "mode": "0o644"
+        },
+        {
+          "path": "SKILL.md",
+          "bytes": 5129,
+          "sha256": "6774345df6aaf50da1502a43432c3f08f8bc972516ec77095bfdea3baf40ed9d",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 327,
+          "sha256": "9d33038f1b3e77ae9f5cf7743c615714e1923366e715cacd994baa19385850f5",
+          "mode": "0o644"
+        },
+        {
+          "path": "pyproject.toml",
+          "bytes": 217,
+          "sha256": "e6245976005588f635bd615be625c3d9cae60608a56a677d82b22d770bd06d68",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/browser-handoff.md",
+          "bytes": 4221,
+          "sha256": "581cb5fdd6da2f0aece03f6965657ed98fa0eaaa07021896928c2009e4a9666f",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/cloakbrowser-handoff.md",
+          "bytes": 6885,
+          "sha256": "d1a9fac17439ffe0294d4b6ea66a1161040fcff749504612214e7a5d7caecea8",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/env.md",
+          "bytes": 3689,
+          "sha256": "eef2b1cc81b109209c5687d701ec1833a349136aea850f977a59cfc2cca39c4b",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/integration.md",
+          "bytes": 3326,
+          "sha256": "dbec65b6e673109d68b8b366c18ba86b09b38132f789cb3e3090524f9b4339f6",
+          "mode": "0o644"
+        },
+        {
+          "path": "requirements-cloakbrowser.txt",
+          "bytes": 559,
+          "sha256": "35364685fd89469296d66900a5637a6bb4e9b819545dfa7d3a0678c473ca3ce5",
+          "mode": "0o644"
+        },
+        {
+          "path": "requirements.lock",
+          "bytes": 243,
+          "sha256": "1aca232249376d40760d01362fa63e652ae2ac2115c9c2cb4249e777faae5250",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/cloakbrowser_handoff.py",
+          "bytes": 4217,
+          "sha256": "57ae52b0d6eab08d3bb19cc1cbb1fb226489a0c52204911e1894544889f1398c",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/fetch.py",
+          "bytes": 211,
+          "sha256": "da15588c0844a67dc5d5d08082879ff8cc3bc0e6e66cb68908311cd50014b2f3",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/finalize_browser_download.py",
+          "bytes": 18409,
+          "sha256": "a286ebad8c7fa3a9f2aff1b2199a27447d8a0fba1a633fb6b3c1e4d0f2136aaa",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/notify_human.py",
+          "bytes": 5996,
+          "sha256": "b1407b3279c366a6803946a00bc29d55049b82108b7b6d55623fdb0f50455cf6",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/__init__.py",
+          "bytes": 288,
+          "sha256": "6e68a22cfdb4f823e88d884038c8826e30601393dafb4991f8a49dc5a09557b2",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/api.py",
+          "bytes": 4429,
+          "sha256": "e57d71e15697a15b0ba353edf33b69e0528d13fd3dca7303368dd0536a329c7c",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/artifact.py",
+          "bytes": 11026,
+          "sha256": "40aaa905aadbb50e05eda0c17de32133dc3931ae570b4ce6698200dd431c940b",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/cli.py",
+          "bytes": 10545,
+          "sha256": "77129604352f55df19acbc07ad8b40256c7be1f1043a5e7df6efbfd7334539db",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/cloakbrowser_handoff.py",
+          "bytes": 26599,
+          "sha256": "9d77e21ccbff844c62963a612d3a7bd6ee77b2f7718118fc97b4ceb97fc20c22",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/errors.py",
+          "bytes": 736,
+          "sha256": "a7544321e0e965c59eb16cc50a6569d5dfd23d50a795383d8f96bb9de8e30a58",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/http.py",
+          "bytes": 5822,
+          "sha256": "bdd1fa0b4ba6018b0d4d2e36872959cc81e92d41e31412501bc7483caf63ae7a",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/idempotency.py",
+          "bytes": 2410,
+          "sha256": "6c5aaef109dda71ac0be08948f1d901ec17fc2328cfeb15b54714b487d96b2e0",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/identity.py",
+          "bytes": 23647,
+          "sha256": "603dfecfd04a1a4749c374670c35b9bd387dfc7c1d2a1678ccb562d8e25511c5",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/models.py",
+          "bytes": 1829,
+          "sha256": "4bf39f024a36a90ca802779fa7f7e7076e502620af995212a21d476f14eaf818",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/normalize.py",
+          "bytes": 1368,
+          "sha256": "15b20d6b983db29ab18f06c45905952b624be9d722b38f06e666d3c7bc46c2f3",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/pipeline.py",
+          "bytes": 8272,
+          "sha256": "60f8045db41ebc8725ae40e1ee6ce77ee73cd3a84437dcb42da8bc9aac1ffaf0",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/resolvers.py",
+          "bytes": 14832,
+          "sha256": "1c08d93bcc1ad53de804beed24713533b768772d8d625bf984372ef3ac825551",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/sanitize.py",
+          "bytes": 3513,
+          "sha256": "78db05aaa763cd05344330dd78436553391ebb619e1bde10b5bc5adbb1f5816e",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/paper_fetch/security.py",
+          "bytes": 3060,
+          "sha256": "0dec95d1cdd4e680fb9dcd9d5284b368d8370302ffadeacc43b636f117413a81",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/runtime.py",
+          "bytes": 12358,
+          "sha256": "8fddb1fce185f505dba6f2986dd2daf210eeaf47520fde46f0514b4ebe0d75b2",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/smoke_test.py",
+          "bytes": 3206,
+          "sha256": "7fa26f99e1eeb12155055199838c780d117b6a2d4ea75df165b16c523617871c",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/__init__.py",
+          "bytes": 50,
+          "sha256": "b24534d509bd5e398a153e371b67498b40928c08c6ad4949c3c7e17103c9f61a",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/helpers.py",
+          "bytes": 4280,
+          "sha256": "a9389cf7b502c2159d3814be2e2710382a23705e4a3e4ac21236dcc5e0869ba9",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_artifacts.py",
+          "bytes": 21587,
+          "sha256": "c4d0fd30c031a9eb4df51391bf8056960831456f030063677ec34215373ed349",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_browser_finalizer.py",
+          "bytes": 10946,
+          "sha256": "6371d630701c5ef2104b339c8c3d33c9cd73f34109a3657a1cfe514d04176a7b",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_channels.py",
+          "bytes": 11203,
+          "sha256": "de495cf1c6c920869954f390ee98393bf1a688289e1c9429699696828826aaaa",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_cli.py",
+          "bytes": 4744,
+          "sha256": "cb249ce7b282f09361a9e0722051cdfd51ea4aa3bd9af52d6424a0195d13cd26",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_cloakbrowser_handoff.py",
+          "bytes": 17207,
+          "sha256": "369d31db2177f9c0411ef5bc21161993541bb837c8d597d72a4751c3ea1fbd7d",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_idempotency.py",
+          "bytes": 2831,
+          "sha256": "cc1aa543a55ace35dd197de13ec9e20422b97f98b9256e74b3accb3adc737203",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_install_smoke.py",
+          "bytes": 4208,
+          "sha256": "650e7239adcfecc3b667be3cc11d96da4e5efb43855ac6685b3454c14742737f",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_normalize.py",
+          "bytes": 672,
+          "sha256": "4080992106abe73f7cc0e172b21de62c69a7d9ad81072e389b0dc8d905fc4dee",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_notify_human.py",
+          "bytes": 3514,
+          "sha256": "b2c0214034cf39a215c6fd094d090dbf4104383d67d7ed8c3b93e31e710bfcc3",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_resolvers.py",
+          "bytes": 7369,
+          "sha256": "a03bb3ba55a75c8da1e383bcfeac53fa8b442653b3d25be82f126794ad45a204",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_runtime.py",
+          "bytes": 3657,
+          "sha256": "1a908bf740bd02fd7b0ed710d676a3129fb1d615747e4b8d8b1d6fc1a21ceb76",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_sanitization.py",
+          "bytes": 4749,
+          "sha256": "add80e115d021737125d3c6e7ae7e8c200b38c0afa059ca275ae446035380eab",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_security.py",
+          "bytes": 2230,
+          "sha256": "02ab884b02675c2084f55fa241c0b65351f1c6100d36d28f7575ecef885b24d0",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "406f58cc098f2d55bba1a484db0616fd631f31b049e2fb96b359c00a4586c6e0"
+    },
+    {
+      "name": "current-account-dataset-review",
+      "path": ".agents/skills/current-account-dataset-review",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3575,
+          "sha256": "cdcc3f50fc3e555a88c4c41de562a49c3a3c181f4d635aa0068746fe328f8033",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 637,
+          "sha256": "9c1006461c4d2f3500691bdc71d5c5d9314f3fe7538fcf943bbfbaf9d8febbe2",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-current-account-dataset-review.mjs",
+          "bytes": 549,
+          "sha256": "9963a494671faeda7dbd85fbd21313b9625efdbbaab416960fba023e6adfde86",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "b85f9efcab640653257b29102cb9bb17cee8f814dc3c45f7060c011e284a5cda"
+    },
+    {
+      "name": "dataset-rls-maintenance",
+      "path": ".agents/skills/dataset-rls-maintenance",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 6016,
+          "sha256": "badc26b1da1bd3e89daf8ec9efa7c2ca9e75878e175a2e352bed2eec73843e80",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 505,
+          "sha256": "25fa8159d4262c618e1169904d18a5758717e0564bb993331954e00ceb42486e",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "57e82a98f1331776fd56969da86bfee1b00a2963589477ef3ebc8b93c20705cd"
+    },
+    {
+      "name": "document-granular-decompose",
+      "path": ".agents/skills/document-granular-decompose",
+      "source": "tiangong-ai/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3894,
+          "sha256": "d43b9d64657e675f254b178a18536175587b0220f7c8975e5037fd3f44f03947",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 260,
+          "sha256": "7e5a5e27b1a2df0e40432a0bba333c0ea3a13fe264ad5acd4d3a31fc6ae8cddb",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/config.example.env",
+          "bytes": 256,
+          "sha256": "94ff325b66cd3a5732be5f3bd9b319d31b1c2d0ba2fa1bfd174c0c80d01a259a",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/env.md",
+          "bytes": 810,
+          "sha256": "9eb2d7ed801bf515f3c3e57461678c6669673f82a1652ab69accfe2b10793f05",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/request-response.md",
+          "bytes": 1106,
+          "sha256": "343286831d9983cc6a90a8f38df2feba5c50eccb9d8bcdef05ae0da56a4375fc",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/mineru_fulltext_extract.py",
+          "bytes": 9049,
+          "sha256": "b1e4442a0bb73602bf4e5010c996256094f54acc2d894d295d1906da611f3b2b",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tests/test_mineru_fulltext_extract.py",
+          "bytes": 2241,
+          "sha256": "d6f797e52760fd52ab011070ab59ffdf769c4777a519acc6e32d27ebcbae4334",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "82e55df19d9199454ecb16fae89055728bdb3e6fff0434bc2ebd16f4c8670f86"
+    },
+    {
+      "name": "embedding-ft",
+      "path": ".agents/skills/embedding-ft",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3443,
+          "sha256": "21f1e68fa54a2c9b32262f101778618ad247ae77387d9a55bf0e9fc2d3e67591",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 880,
+          "sha256": "bbbaba6b042130049c0721f2986c971bea7d9b8414658c7f65f49d5ba93efb79",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/example-jobs.json",
+          "bytes": 237,
+          "sha256": "85923bdc62e8beea5240c835d4934ba253a6050f543be44921058f728b223d97",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/env.md",
+          "bytes": 1196,
+          "sha256": "ae1c9a27fb8180d2cb9d681e01ea9b581609f0f16d0c41ffafa3d7221479c88e",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/job-contract.md",
+          "bytes": 978,
+          "sha256": "5c08738297c37af0796bba771e794bd859954ddea934a1c0390b5d365f143f02",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/testing.md",
+          "bytes": 1360,
+          "sha256": "1ab11967f6994931ddc9572fac49948592ef716fbfe8455924b8910024a963c2",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-embedding-ft.mjs",
+          "bytes": 1678,
+          "sha256": "b0ea7c4a2890d3ea0230bab59d48fc3ce8ed6665a668f0459c0c184057a9b4e3",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "8b6f17a52d08f4cdc1cc72ef8e045abeabe850dd847fe5e804d7536559181377"
+    },
+    {
+      "name": "external-dataset-curated-import",
+      "path": ".agents/skills/external-dataset-curated-import",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 4437,
+          "sha256": "936005740164f13c9f4f15957fcbfc7faffb8529b31f0fc761e53c88741d3f73",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 851,
+          "sha256": "eabe76328b7639845b40b8df48ed99ed3e0960f02f1b0bba023a58915636cf96",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "5c4176b788de940a684dff8707ce27c40ddd62b887a8bfcba4b8da0d463fe4e0"
+    },
+    {
+      "name": "flow-governance-review",
+      "path": ".agents/skills/flow-governance-review",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3747,
+          "sha256": "df4273d43c4a67aedf7abfd834a8e19e13178e3299799a7acc8a5b19b164a33d",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 652,
+          "sha256": "c765c64e0be0c364724b12729cf77ec59bd57dd175dc68b0d0faf4bf201c4b28",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/example-flow.json",
+          "bytes": 3507,
+          "sha256": "d0cbd9975aa8da0788ed7f357cc2f5ee9442218930674ea2a2d72eaac715a2c4",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/tidas-public-rules/public-rules.source.json",
+          "bytes": 329,
+          "sha256": "d122e43a081bc28cbd751b9a6b7ce78d5fe39fde741b637cb69820945a2f96b5",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/tidas-public-rules/public-rules.v1.json",
+          "bytes": 8919,
+          "sha256": "d8f1e90777fe0c675d1e24cbd7f1141ee776d3ebda9d8b24c91f714779540dec",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/decision-schema.md",
+          "bytes": 770,
+          "sha256": "fca243f0351c91fb84d62cca4a00037654aa31d01d9487fe8f2ec2c58e373d1d",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/env.md",
+          "bytes": 2407,
+          "sha256": "3a3f4c0a632db9d8770c9c6dea9c12d5005a72a10e02af5dc09df1c0a3df12a7",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/real-db-first-runbook.md",
+          "bytes": 880,
+          "sha256": "b2872d9e6304cda848a7110c6e97fc8f02b8dd6867e748098fed48b06f600760",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/tidas_flows.yaml",
+          "bytes": 20638,
+          "sha256": "c7eadc36124e0f9294c846be72fbd7b59776a3bf1213ee969b85df553fa06029",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/workflow.md",
+          "bytes": 653,
+          "sha256": "b9e5dd444461e23bf17e7d72ca28abea9163bf176b1b0cacf028019f9c26db88",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-command-manifest.mjs",
+          "bytes": 1516,
+          "sha256": "24baf7446c4f2717a08e5ba7d4594aa68b7e9b01ec19e40b9243975f04aed290",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/read-public-rule.mjs",
+          "bytes": 2209,
+          "sha256": "1201097a4a37a83894737dc0972606cf69e4d06320d0e6c01b1d0be286d04936",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-flow-governance-review-fixture.mjs",
+          "bytes": 2528,
+          "sha256": "0191b8e7f4a9d02f4e441bb0d7c5d859497e1a6a970f09a84897ad3671ea02d5",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-flow-governance-review.mjs",
+          "bytes": 1073,
+          "sha256": "5e913cab4f105056545c5c0430592f76bb5fce3ddb1d76743f39cb1b1a9f531c",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "942c0f1f3a30f8dcbb4b7bd706464cf2e5020f56d20e23c55e6c9d1cd77a06cf"
+    },
+    {
+      "name": "flow-hybrid-search",
+      "path": ".agents/skills/flow-hybrid-search",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3435,
+          "sha256": "9d95dd35beb0420a964cc88874783ed0ee5e1db1d37aeb62ddfed1f70c4ce7a0",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 559,
+          "sha256": "d4b790719ba8086f671970df3aad43b6577fa8e1895fdcb3ed6849d938dffe0c",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/env.md",
+          "bytes": 804,
+          "sha256": "c94abd500495e234cae00fe802a11279c61fe54e265ab9b26d7652ad861f291f",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/prompts.md",
+          "bytes": 476,
+          "sha256": "326b681b496c88c027ea04d4e02f0089ce75cfb0a6091133521ca58ada248f42",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/request-response.md",
+          "bytes": 1028,
+          "sha256": "f6c487c667041b726f6e3a6c55a0da2cedbdff601a7ca62d576facb3bd9fca68",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/testing.md",
+          "bytes": 697,
+          "sha256": "af1d9a8e1501f655a0c47eb1d514751235430e5e71d734d32d47eea7bfd029da",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-command.mjs",
+          "bytes": 2521,
+          "sha256": "4c44142fa4462eca5eff426357004d62ddc999fd33f6dfefb9e919cdb9ff3cef",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-development.mjs",
+          "bytes": 27206,
+          "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-installed.mjs",
+          "bytes": 2745,
+          "sha256": "de3d3bb63c57d796c3dae2cd00674d2d619506d2bdcbc4f8750ca56211fff32d",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-launcher.mjs",
+          "bytes": 8462,
+          "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 1394,
+          "sha256": "0a911bafcfb2347d045da700f002f90da60c3fc99c439b5ad8b4161ed1f36879",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-flow-hybrid-search.mjs",
+          "bytes": 555,
+          "sha256": "f3e7a82f63bb4649b4c258ef03551259bd74948e9cde9d8d408c763e3a3b2dee",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "b4051a7e31b8c1bad0f42cbb9eed853485f87929a3d01ad2503541a497f6a6c8"
+    },
+    {
+      "name": "foundry-tidas-authoring",
+      "path": ".agents/skills/foundry-tidas-authoring",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 4041,
+          "sha256": "7e7c499f79ab42073326047104a05a741ef7beace0fe9d54766d06be30fe02e3",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 974,
+          "sha256": "18e6ef4d1c6faa3e8793c19f8e872a137f3acba77641e753de167528c285d356",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/semantic-work.md",
+          "bytes": 9904,
+          "sha256": "68ff65c50b954af974b434863a26b6b0a1a2399f4fe992e6205f23b9ed33a52b",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "11392c6093720549a8e74b83da6e8c440252e593fe1b4b71392ad4fbc4d150fd"
+    },
+    {
+      "name": "foundry-tidas-import",
+      "path": ".agents/skills/foundry-tidas-import",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 14920,
+          "sha256": "29266e5a34e20957c42fb178d368eaad8403ee193923aab72674df4d7495c65f",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 1633,
+          "sha256": "a6560f2008bdf3ea977a4e41e2d39c37de278176507bb06305cd1b9df3de7bf5",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/licenses/tiangong-cli-LICENSE",
+          "bytes": 1077,
+          "sha256": "5ca31e8840557caad889b275beef7c9d56e67efede031e71228c5ff8f0d4135e",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/task-workflow.md",
+          "bytes": 18339,
+          "sha256": "73a29346c982bbd1e712d327b268f47713d2f08d52467cca572a0205c920a61a",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/bootstrap-lock.json",
+          "bytes": 3344,
+          "sha256": "afdec0b1597f3c5e130ac70f4952af0e9793d2861448d014bf8962ebcc8731d8",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tiangong-runtime-bootstrap.ps1",
+          "bytes": 13126,
+          "sha256": "a797bc5269386a0f45fbc5bebb7d634b37fc8a164500aaaa4905be5e61bf8f65",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/tiangong-runtime-bootstrap.sh",
+          "bytes": 11742,
+          "sha256": "7aa826448f7b0e1d25f59a19a6f8c906621a82f0ee956124d9f93484885b9fac",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "1cd99bc02accc128535c7b3e3a43db22a3c1a8d8e6dd1105bccf6ae4f3ec1792"
+    },
+    {
+      "name": "lca-publish-executor",
+      "path": ".agents/skills/lca-publish-executor",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3262,
+          "sha256": "667f0c506ecfa69b91ac01ca600c90f757d40cae29351ef27c6f87e991babe8c",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 636,
+          "sha256": "3dfdd1afcf460c988f50e2d351286ae3e276a1a524d8894e21a6bfd09f1fea53",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/publish-contract.md",
+          "bytes": 754,
+          "sha256": "0cc9eefe3e807b632ad34105a50670f1ce4d2f97b61475d0fac4d875714121a8",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-lca-publish-executor.mjs",
+          "bytes": 548,
+          "sha256": "22346165b200a9e3bf3da8f5fbcaea06e4bd9fb1f146c15e4304514204d15503",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "9e3e4f1dcdd6006a91555c5cc0fa187bcd7536097b95261e75d789d41c41fe14"
+    },
+    {
+      "name": "lca-study",
+      "path": ".agents/skills/lca-study",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 10819,
+          "sha256": "de8f7dee8094da6c7722bf2df5699f910652e50c3f40dbb507f10e765fc1d733",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 2570,
+          "sha256": "d83889fe0df79a0fb8aa06e5a8a00bfd980bf0b669eb211aa986887a55aa3e00",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/proxy-example/README.md",
+          "bytes": 2130,
+          "sha256": "b799f7a7b46e16bf3427de5d222237818b82fdbb5d097f03c3b2e1eacf170e69",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/proxy-example/request.json",
+          "bytes": 14364,
+          "sha256": "5e7ba88692f9f143c7acc18932afab2a692114739e2c230e6cfde903e3c27a08",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/advanced-analysis.md",
+          "bytes": 10510,
+          "sha256": "c3e75c777b81dcf3334ebe0fd06267aad5bcff7e156d56c343bb4b5ddfe2fb18",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/background-modeling.md",
+          "bytes": 6190,
+          "sha256": "5a11e84806d4340816d14a971c0628fb921267e3e78748c7ae755a1f59226306",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/evidence-extraction.md",
+          "bytes": 1977,
+          "sha256": "4d6f4132be1bfcac8c7e1d9e59c75ad517bfa4ec16a317be0ce041f200a39798",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/evidence-intake.md",
+          "bytes": 6234,
+          "sha256": "41f2c500c25715445c0008be14be19161963aef97de2fa2bacdbc5006a490a81",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/getting-started.md",
+          "bytes": 7824,
+          "sha256": "918a65c0752360cde8fc52be59e98897371d1d6499a2f3199c4806ed0e9361d7",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/hosted-study.md",
+          "bytes": 9393,
+          "sha256": "ee960f6e81409071ec9dfceb81527bcb0113d188733ed3a67281e973fa6d17e7",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/method-assessment.md",
+          "bytes": 9922,
+          "sha256": "f6c010236e70cf0c776e328b8fdcc901fca11e95db4616ccb10af61c02bfee94",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/model-calculation.md",
+          "bytes": 5836,
+          "sha256": "b3cb3a9bdc4e13f2d9e9013082e42ac0f3ab579fb2894df11562cf68e3559a80",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/operations.md",
+          "bytes": 10051,
+          "sha256": "483c3b16071a68365d85e63b1117c6278e27c66c1ef8b45e34c5220f051edb3f",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/report.md",
+          "bytes": 5621,
+          "sha256": "eaaf2673275a9beb598d04b49b73e76fba351caf342972cec8d588522e0f4139",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/review-sharing.md",
+          "bytes": 9827,
+          "sha256": "e7f2093ac9131bb697902ba120e67bc720cbd5f6de10721354113ce3ad7cd776",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-command.mjs",
+          "bytes": 2521,
+          "sha256": "4c44142fa4462eca5eff426357004d62ddc999fd33f6dfefb9e919cdb9ff3cef",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-development.mjs",
+          "bytes": 27206,
+          "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-installed.mjs",
+          "bytes": 2745,
+          "sha256": "de3d3bb63c57d796c3dae2cd00674d2d619506d2bdcbc4f8750ca56211fff32d",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-launcher.mjs",
+          "bytes": 8462,
+          "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 1394,
+          "sha256": "0a911bafcfb2347d045da700f002f90da60c3fc99c439b5ad8b4161ed1f36879",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "dfa81d009b77017b0f2db4c4e3ce620123132fadbbfe33dbc05a81df7b53a15b"
+    },
+    {
+      "name": "lifecycleinventory-review",
+      "path": ".agents/skills/lifecycleinventory-review",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3507,
+          "sha256": "d709b9f7b350a2526770361e61d26ad9acfd8e298ad4316b1d5cec0d8682fd70",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 628,
+          "sha256": "b9297ae123a4b7546847a30d341a027278b764ad162391f43750a27f217ce5c3",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/tidas-public-rules/public-rules.source.json",
+          "bytes": 329,
+          "sha256": "d122e43a081bc28cbd751b9a6b7ce78d5fe39fde741b637cb69820945a2f96b5",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/tidas-public-rules/public-rules.v1.json",
+          "bytes": 8919,
+          "sha256": "d8f1e90777fe0c675d1e24cbd7f1141ee776d3ebda9d8b24c91f714779540dec",
+          "mode": "0o644"
+        },
+        {
+          "path": "profiles/lifecyclemodel/README.md",
+          "bytes": 620,
+          "sha256": "2777d1b682aa73b5c1c9d7d8d7a851732469b42ee636f067d4481bbabe04d559",
+          "mode": "0o644"
+        },
+        {
+          "path": "profiles/process/references/process-review-rules.md",
+          "bytes": 2544,
+          "sha256": "b22914f64ff12122ef3c515210db18d315d003269378c0c70a36733ad2db918c",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/read-public-rule.mjs",
+          "bytes": 2209,
+          "sha256": "1201097a4a37a83894737dc0972606cf69e4d06320d0e6c01b1d0be286d04936",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-remote-process-review.mjs",
+          "bytes": 560,
+          "sha256": "d7683e36e16d1b4520cb676817cf6e0f779d8ef12245714546a1507fe79d227c",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-review.mjs",
+          "bytes": 1059,
+          "sha256": "9ec5e9d4494fcae0271e646dab230eb46cedd644d1e3c8dc42cd4a3c40479b02",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "74b1a14511220fd7f511c920c650601646b0e9a605e13fa980a79ce6627e29d5"
+    },
+    {
+      "name": "lifecyclemodel-automated-builder",
+      "path": ".agents/skills/lifecyclemodel-automated-builder",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3474,
+          "sha256": "9c683f7859b7c7969a79f8f758688dfd84498a8ab69a5806e6209343cd12407c",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 672,
+          "sha256": "c215f3de3723329348b031bde95c5f37092a990792ab244311a80a42742afe46",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/model-contract.md",
+          "bytes": 2206,
+          "sha256": "807209d3ae60caf80a5143af7f566cccb2ed8ba88c7e9e81d73fa4dd830f244f",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/source-analysis.md",
+          "bytes": 597,
+          "sha256": "556ae5e1992c7feb4525458f4fef528235cf29cb36aeae5f32a7fc8268435bad",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/workflow.md",
+          "bytes": 708,
+          "sha256": "9ebe455e902684be4cd799ec837fef8a2fb9d9102b73f3c38aa518b3caa48b0f",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-lifecyclemodel-automated-builder.mjs",
+          "bytes": 558,
+          "sha256": "0a5119bace7372a0fa44796aeebe3da5021802cc784e5b76f6ef5433852285c8",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "aa9e6c36384f06f45533b65494af6be6f62dca9c7a7958772776f8f26be2172a"
+    },
+    {
+      "name": "lifecyclemodel-hybrid-search",
+      "path": ".agents/skills/lifecyclemodel-hybrid-search",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3480,
+          "sha256": "382acda02d31700954fa00889417bdf246f47bc9a7df0b5893c39073b12a6a3e",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 572,
+          "sha256": "55d7e1ed9b42249042a6ab358e879d940a4af3f42906eb37d729610906ed1b31",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/env.md",
+          "bytes": 804,
+          "sha256": "c94abd500495e234cae00fe802a11279c61fe54e265ab9b26d7652ad861f291f",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/prompts.md",
+          "bytes": 476,
+          "sha256": "326b681b496c88c027ea04d4e02f0089ce75cfb0a6091133521ca58ada248f42",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/request-response.md",
+          "bytes": 1030,
+          "sha256": "2a94449385ed0d4848718c6ac257e1640aefdae0a7064eed889d5cf7df72507c",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/testing.md",
+          "bytes": 707,
+          "sha256": "4a0cd317e06eb6015b75357a03fcdbe966b3e4aacd5bb084a8f8da9aacbb4dcc",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-command.mjs",
+          "bytes": 2521,
+          "sha256": "4c44142fa4462eca5eff426357004d62ddc999fd33f6dfefb9e919cdb9ff3cef",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-development.mjs",
+          "bytes": 27206,
+          "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-installed.mjs",
+          "bytes": 2745,
+          "sha256": "de3d3bb63c57d796c3dae2cd00674d2d619506d2bdcbc4f8750ca56211fff32d",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-launcher.mjs",
+          "bytes": 8462,
+          "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 1394,
+          "sha256": "0a911bafcfb2347d045da700f002f90da60c3fc99c439b5ad8b4161ed1f36879",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-lifecyclemodel-hybrid-search.mjs",
+          "bytes": 556,
+          "sha256": "9303c9c1991813dd9f47219a92e45770da4a4354da90919951c6f8712975b204",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "55ee18a16e2242946436e62feab9517c7dab21407dba5edeb868fa9c1e2f9a82"
+    },
+    {
+      "name": "lifecyclemodel-recursive-orchestrator",
+      "path": ".agents/skills/lifecyclemodel-recursive-orchestrator",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3375,
+          "sha256": "84c44ce4dbe591abcafcf5bb1af7e35d769d1154adab97cbff4888f2ad3a5c8e",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 654,
+          "sha256": "edd5376af9c05649e8d28f1afe2086bbc107f0baf2690c09acd734dfc4360969",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/data-model.md",
+          "bytes": 927,
+          "sha256": "78907983bca5dd2bc1ecc836d22bdbc40e0c2cd162d1ed7f0822e706d7fe6c7d",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/invocation-contracts.md",
+          "bytes": 931,
+          "sha256": "d73cb9a784309b6049435eaf7b40d43ab1f0c677832ae6aaca6c6c8c76274a3f",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/minimal-relation-fields.md",
+          "bytes": 607,
+          "sha256": "bc63d35eba21a2765a76af30c60c91a1480aaebc08c902bb42046d7b3e881cb3",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/workflow.md",
+          "bytes": 711,
+          "sha256": "cec0fba9ab7ee6b4681888239d1ca86d8c19f1ce4e08c064767a40918ad09179",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-lifecyclemodel-recursive-orchestrator.mjs",
+          "bytes": 558,
+          "sha256": "0a5119bace7372a0fa44796aeebe3da5021802cc784e5b76f6ef5433852285c8",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "92e27538715b67d94f9e503e130e3e853aae522a964b267671949bebf21cd023"
+    },
+    {
+      "name": "lifecyclemodel-resulting-process-builder",
+      "path": ".agents/skills/lifecyclemodel-resulting-process-builder",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 2781,
+          "sha256": "fc7642659c241a0ccc7e95b0c4e002faa3d6b3e7fb5dd634e25a9d2efb6aa002",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 486,
+          "sha256": "dc531c3e5b3e66f1d0b9add5953ccfb59a2751d807fb39d80436fab7ccef867e",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/example-model.json",
+          "bytes": 5698,
+          "sha256": "ecfe88fea9127c6f36d4c305ec3df961ba9898cc638f3741fab332a679f780d0",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/example-processes/process.json",
+          "bytes": 8537,
+          "sha256": "59387b05b030bb96e6a286b4fadb6deea29e500ace317956c3f48f8517bb04dc",
+          "mode": "0o644"
+        },
+        {
+          "path": "assets/example-request.json",
+          "bytes": 462,
+          "sha256": "3a8945af1e9fc07ba40cb3c561f97d6cb8ae49343774887c7c5cd9fe95341521",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/builder-invocation-contract.md",
+          "bytes": 323,
+          "sha256": "e121d3143f169535ef55d4011158dcaea0e27f3c78c3c38934875e9ede17e756",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/integration-notes.md",
+          "bytes": 371,
+          "sha256": "0591b14ae195036dc0ddb74a1f80a9a8abfb2c79edc589efd103376537323a98",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/projection-contract.md",
+          "bytes": 401,
+          "sha256": "0e6c3cb1e4dbfaa0fb7ab45286fe14d90d4e6d1dc82038016d42c1e73c49863d",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/projection-workflow.md",
+          "bytes": 374,
+          "sha256": "4defefd03f0c1502c3f9c72d7a3fc14bb1fee6202eb6d0ecfa3f43158fb02f57",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-lifecyclemodel-resulting-process-builder.mjs",
+          "bytes": 719,
+          "sha256": "76476ec91d2af28bf174cbc6a7b483c11547bd796ed4dffa1f8b5a7a9a18b3e7",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "a6d9892b4c01ad6d4899d0af10e01d68bc06995c5908e2ae388efd00a96a0118",
+      "commit": "3fc8d7f6f39eda34bd344db194c76503e56c83ea"
+    },
+    {
+      "name": "process-automated-builder",
+      "path": ".agents/skills/process-automated-builder",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 5803,
+          "sha256": "c404607fa5cef4b0eb322af5a92616b355b3dfaa1b7878cbf2a6c2ea345c47ab",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 802,
+          "sha256": "c3f32bddda5b80b5d99b1bfc93354e923a5d5dec44eaaae60848f92f4105b58d",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/ilcd_method_guardrails.md",
+          "bytes": 5790,
+          "sha256": "6403ba0f97ff17af6056a836ff8f5f59fa11e1d671070903a7db5eb23e1e7161",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/operations-playbook.md",
+          "bytes": 1352,
+          "sha256": "8c7efd2014c5bdd76cb698d648cb6acda9879f458a35a64dbc11001f608d07cf",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/reference_output_policy.json",
+          "bytes": 1054,
+          "sha256": "8cb6e6bb4920096715ea6582215cf341305ce414a440f70d7fe7e7d9b55fb029",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/workflow-map.md",
+          "bytes": 622,
+          "sha256": "c323b09fe14b98deecc3fea9c5998c8cf19bab460ffa3f51724e2c5a226371f7",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-process-automated-builder.mjs",
+          "bytes": 560,
+          "sha256": "d7683e36e16d1b4520cb676817cf6e0f779d8ef12245714546a1507fe79d227c",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "9117eb9034a11e64d8127235d1c383a3b0aaa271c896f41fc0c9190df754dbe0"
+    },
+    {
+      "name": "process-dedup-review",
+      "path": ".agents/skills/process-dedup-review",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 2999,
+          "sha256": "05433eded2d7a4101e0cf059170c4a5fc949dfa1d7d6ebe97bfa2607270d9cbd",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 630,
+          "sha256": "9190e237a24ca7241999c50ea9243229047297803b4ddd4cf03f052084a679a3",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/review-rules.md",
+          "bytes": 2267,
+          "sha256": "1a1023912c03a5b79d13733cfa29a55ea3c14c73f5b6235af8bd5d0b1227bda5",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-process-dedup-review.mjs",
+          "bytes": 568,
+          "sha256": "1ad65ef39ecb938e472d0ad3912ab85b414e06a275a8d54a8517147226859009",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "7a61684409a00e874c82102440e38ef4b4aff05568d846bb02ad07b6748e2660"
+    },
+    {
+      "name": "process-hybrid-search",
+      "path": ".agents/skills/process-hybrid-search",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3462,
+          "sha256": "8e778f9f2b605dd61d88e1829543714c86a117a70785a19146632cd27918d0ba",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 571,
+          "sha256": "b9826878c6a0264ff8cac81cddf4672c5547891ee8109d4f173c770514ea02b9",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/env.md",
+          "bytes": 804,
+          "sha256": "c94abd500495e234cae00fe802a11279c61fe54e265ab9b26d7652ad861f291f",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/prompts.md",
+          "bytes": 476,
+          "sha256": "326b681b496c88c027ea04d4e02f0089ce75cfb0a6091133521ca58ada248f42",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/request-response.md",
+          "bytes": 1034,
+          "sha256": "e4aee18be824c7a5f554750ede37484f653687749bdde8d2a695126350f0bbf9",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/testing.md",
+          "bytes": 700,
+          "sha256": "97a75ae006a8722a361d1911ba2fe734732ae5d3f7646a166e7efac2fe030051",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-command.mjs",
+          "bytes": 2521,
+          "sha256": "4c44142fa4462eca5eff426357004d62ddc999fd33f6dfefb9e919cdb9ff3cef",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-development.mjs",
+          "bytes": 27206,
+          "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-installed.mjs",
+          "bytes": 2745,
+          "sha256": "de3d3bb63c57d796c3dae2cd00674d2d619506d2bdcbc4f8750ca56211fff32d",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/lib/cli-launcher.mjs",
+          "bytes": 8462,
+          "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 1394,
+          "sha256": "0a911bafcfb2347d045da700f002f90da60c3fc99c439b5ad8b4161ed1f36879",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-process-hybrid-search.mjs",
+          "bytes": 558,
+          "sha256": "bd2faae8b75a9cbb963bdc61d13504bb910b7ae8512a8190d4aa54937be577a7",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "2d274a07817249ce855fb5c7cf8349ef9b8775aafdea77271007be572d5f1ff4"
+    },
+    {
+      "name": "process-scope-statistics",
+      "path": ".agents/skills/process-scope-statistics",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 2789,
+          "sha256": "49ebdd36fdde60d785724a15ab68fe6444951ac8cc7e76f2eff083860fe04d72",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 615,
+          "sha256": "4d71a8466b8ff156982c5de03c8de22a41f64ca9216dbb6fc6655562673a3208",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/metric-definitions.md",
+          "bytes": 3487,
+          "sha256": "73118dda481bb39fe6f8cbdd5ea9205e3bb3e6a6a2768e54ee1520db2612607f",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-process-scope-statistics.mjs",
+          "bytes": 574,
+          "sha256": "5ab71e5fe4c1f68e57ac7c118dba81d12fef16e4bd9f5f1a01f0679a6ef7b729",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "930f99e14b3d3422af61571c5f1a57c326e7b711585009f050a6b33f018fc13f"
+    },
+    {
+      "name": "source-evidence-dataset-development",
+      "path": ".agents/skills/source-evidence-dataset-development",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3893,
+          "sha256": "5650e9ae7e7aa1aeab0edfecd0a28bf60a9832ea6e1c1ad642f5bc47598baeb7",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 746,
+          "sha256": "b1fc5ce47752e13e39d9fe30b5e9dc0b63682ff27bb562073a8292e48dd78b19",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "52306b48952a89ade40c214ff37f611c7539dc9820a84df88540be2c387cb799"
+    },
+    {
+      "name": "tiangong-kb-report-search",
+      "path": ".agents/skills/tiangong-kb-report-search",
+      "source": "tiangong-ai/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 4313,
+          "sha256": "5f36781a85ec081d62e2a2092714be3a04a5680885d0fef602606c36570b4fcb",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 335,
+          "sha256": "62eee5ac4b8dc89c1297adb02dd1499282f806d7e04e7bdaa851dde1fdade50e",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/report_search.sh",
+          "bytes": 9870,
+          "sha256": "c8ddb4473e69809a718ed5ca0b5e047558cada341883080859988cb35cf913c5",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/test-report-search.sh",
+          "bytes": 3477,
+          "sha256": "a2c94f640167cd7a52dd96452e18ad684400d68a3a499c8247c393162b17e190",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "080796fefc107cbb898ee429ee952ed3bf05ac1474b331281f050d9811bbb9fd"
+    },
+    {
+      "name": "tiangong-kb-sci-search",
+      "path": ".agents/skills/tiangong-kb-sci-search",
+      "source": "tiangong-ai/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 5910,
+          "sha256": "7cf7a4660098fc1ca5db5922bad602daea8188e31d8a19a5660507741527d8a2",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 323,
+          "sha256": "c900105333a3b913523ee75d0134e646ea7f3ec960f4a8ebd53487547298a4a1",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/sci_search.sh",
+          "bytes": 10091,
+          "sha256": "559ecd7e8b442874afe10889e62358d779bf1041349928a87cf5c1338d7a6741",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/test-sci-search.sh",
+          "bytes": 6154,
+          "sha256": "a48c674c23aa236686566f4569b7b83a7c6043f1bdbcc3642722ec9962874ac6",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "764d9af6412cec2c0171d20b79c75d6ad697f46a7a916e0780148152cd12b31c"
+    },
+    {
+      "name": "tiangong-lca-remote-ops",
+      "path": ".agents/skills/tiangong-lca-remote-ops",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 3014,
+          "sha256": "983c71e0a80c9190704197eb2cdd3105831157dcda70c12c2d088c3d473c5061",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 796,
+          "sha256": "5c4562c9a313ed806f5ed06f8dc8a2cd77916e004e0ba7e32a1d586045318950",
+          "mode": "0o644"
+        },
+        {
+          "path": "references/process-write-routing.md",
+          "bytes": 5234,
+          "sha256": "2e4c6644e4d09d3fdf408ec7c2eb6c6b680a4d207b6bfea1531e6977105d128e",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/run-cli.mjs",
+          "bytes": 117,
+          "sha256": "a80d4c02e8f1975f91cf61d4c86e14fb8dd33caf81a4c65fe943979de210ef61",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/update-process-references.mjs",
+          "bytes": 569,
+          "sha256": "9dddfa1a97aa85383fb0aabec6afbcb4b75b2231d22b851cb5aaaec24f850aaf",
+          "mode": "0o644"
+        },
+        {
+          "path": "scripts/verify-process-rows.mjs",
+          "bytes": 572,
+          "sha256": "9762d0e9fa5fb13ac2c895e534e599b219730015f2c53105fe9d2541fe45e6b1",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "54e3874715a4838709a77a3ed7be6ce927650485ec3b7a75eacdb1dc85ab5773"
+    },
+    {
+      "name": "tidas-bilingual-transcreation",
+      "path": ".agents/skills/tidas-bilingual-transcreation",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 2612,
+          "sha256": "b183e7fc6da294a49064be648d149db99e2d33cf9bcd6f6215bfa8ae9023a037",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 517,
+          "sha256": "d984cd1bb5faa7f33b3afe60e161edfc456f1e18582d62fbe660f1c527ec515e",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "633ce20896ada57f5fda64de07f8aadea9483676ebfe1d2d8eb5f064280f8357"
+    },
+    {
+      "name": "tidas-contract-context",
+      "path": ".agents/skills/tidas-contract-context",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 1018,
+          "sha256": "1b12518621dc7e290546c4a67366ce8514a9dd5ad707bc96ce9b91d9728047db",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 503,
+          "sha256": "0299310dd0adb2417c06f5f3809c920cc88417af352cbf386d59e1fda0f1801f",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "84b414382eabc11ba0d540bc5df67363999bb3cec3d1547ba2eed38a67fac076"
+    },
+    {
+      "name": "tidas-data-import",
+      "path": ".agents/skills/tidas-data-import",
+      "source": "tiangong-lca/agent-skills",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 2231,
+          "sha256": "82543492f586c6e4781156ca8b38bc61d2cb61e9d818aac8984d50f301860640",
+          "mode": "0o644"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 493,
+          "sha256": "5d07aeb22fc09aec043e1752c2c509b49cf478033d382b98efceaaf732f43ec4",
+          "mode": "0o644"
+        }
+      ],
+      "inventory_sha256": "5531049a5bdd56bf55d0f7876635038d64bbc339507e811b29ac51f88ba68c9e"
+    }
+  ],
+  "support_files": [
+    {
+      "path": ".agents/skills/scripts/check-toolchain.mjs",
+      "bytes": 1313,
+      "sha256": "b3a35cbe7171693eccf5e8fffcbb84cf486941d2edec6221fe9644e3441ebc81",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/docpact",
+      "bytes": 1434,
+      "sha256": "a04bcf3de8600700ce6d5ff69810c66b42147d1bc8aac13ebd56155a40ca2f46",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/docpact-gate.sh",
+      "bytes": 1292,
+      "sha256": "3e78907d0fd77ca0d214a762e7457546d96f8c27c997ef047ce69f8f4b1b668f",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/inspect-local-cli.mjs",
+      "bytes": 2071,
+      "sha256": "0f0b91ee72b6339e57c5c727c95b36df0bce8b000ec0f9e133ecdaede820e9ea",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/install-git-hooks.sh",
+      "bytes": 240,
+      "sha256": "b45b719c9fcc159a651b5d25eb7c68d917c963688129097c1d1070c030e85d5e",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/lib/cli-command.mjs",
+      "bytes": 2521,
+      "sha256": "4c44142fa4462eca5eff426357004d62ddc999fd33f6dfefb9e919cdb9ff3cef",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/lib/cli-development.mjs",
+      "bytes": 27206,
+      "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/lib/cli-installed.mjs",
+      "bytes": 2745,
+      "sha256": "de3d3bb63c57d796c3dae2cd00674d2d619506d2bdcbc4f8750ca56211fff32d",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/lib/cli-launcher.mjs",
+      "bytes": 8462,
+      "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/lib/windows-foundry-diagnostics.mjs",
+      "bytes": 6890,
+      "sha256": "1bea1e008e9a3f9553588a308f986df18c75d6efa3c61f7dda4bf5da7e2824ca",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/qualify-ci-cli.mjs",
+      "bytes": 1008,
+      "sha256": "0f3baf36e5a35dc52bf00cfced99ab659eb41c316ca2850df4cff6e59e1fae62",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/run-cli.mjs",
+      "bytes": 1394,
+      "sha256": "0a911bafcfb2347d045da700f002f90da60c3fc99c439b5ad8b4161ed1f36879",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/sync-tidas-public-rules.mjs",
+      "bytes": 3200,
+      "sha256": "826cecf73e8134e7156f88aeceebd1962bbcc04afc298a019b14512e0d1e3caf",
+      "mode": "0o644"
+    },
+    {
+      "path": ".agents/skills/scripts/validate-skills.mjs",
+      "bytes": 22337,
+      "sha256": "b2d1167a185da6273adcf0d8d1f3aeefb14f6326b237006c4d552780c9479fdd",
+      "mode": "0o644"
+    }
+  ],
+  "local_update": {
+    "purpose": "Preserve autonomous authorship, complete revision and actual typed CLI coverage; installed research capabilities replace per-task skill registration.",
+    "patch": "installation/typed-infrastructure-migration-20261115/skills-local.patch"
+  }
+}

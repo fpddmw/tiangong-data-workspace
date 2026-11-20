@@ -1,0 +1,7 @@
+[
+ {"input":"authorization denied: required owner assertion missing","expected":"authorization denied: required owner assertion missing"},
+ {"input":"Authorization: Bearer pretend-secret root cause: missing scope","expected":"Authorization: [REDACTED] [REDACTED] root cause: missing scope"},
+ {"input":"password=\"pretend password\"; 根因：单位不匹配","expected":"password=[REDACTED]; 根因：单位不匹配"},
+ {"input":"cookie=session-fiction; cause=owner_mismatch","expected":"cookie=[REDACTED]; cause=owner_mismatch"},
+ {"input":"https://example.invalid/callback?code=pretend&state=pretend#done","expected":"https://example.invalid/callback?code=[REDACTED]&state=[REDACTED]#done"}
+]

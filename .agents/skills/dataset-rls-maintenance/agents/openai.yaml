@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dataset RLS Maintenance"
+  short_description: "Plan, approve, apply, and verify current-user RLS-scoped dataset cleanup and redo workflows"
+  default_prompt: "Use $dataset-rls-maintenance only through CLI OAuth and current-user RLS. Require auth status and doctor-auth, keep account sessions separate, hand login to the human, never request credentials/codes/tokens/API keys, then freeze scope, dry-run, approval, commit, and readback evidence without direct Supabase access."

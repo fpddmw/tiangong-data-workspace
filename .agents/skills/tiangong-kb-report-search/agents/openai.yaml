@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tiangong KB Report Search"
+  short_description: "Run one isolated authorized report search"
+  default_prompt: "Use $tiangong-kb-report-search only for one explicitly isolated owner-authorized report query; route systematic work in an Auto Research workspace through $tiangong-auto-research and its broker."
