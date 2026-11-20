@@ -1,0 +1,61 @@
+{
+  "schema": "data-workspace.agent-runtime-config.v1",
+  "version": "example-disabled-20261029",
+  "hosts": {
+    "codex": {
+      "adapter": "codex-app-server",
+      "binary": "codex",
+      "enabled": false
+    },
+    "claude": {
+      "adapter": "claude-code-print",
+      "binary": "claude",
+      "enabled": false
+    }
+  },
+  "providers": {
+    "native": {
+      "codex_model_provider": "SET_EXISTING_PROVIDER_ID"
+    },
+    "claude": {
+      "selection": "existing-host-configuration"
+    }
+  },
+  "roles": {
+    "global_main": {
+      "host": "codex",
+      "provider": "native",
+      "model": "SET_VERIFIED_MODEL_ID",
+      "effort": "xhigh",
+      "profile": "read-only-evidence"
+    },
+    "task_lead": {
+      "host": "codex",
+      "provider": "native",
+      "model": "SET_VERIFIED_MODEL_ID",
+      "effort": "xhigh",
+      "profile": "read-only-evidence"
+    },
+    "executor": {
+      "host": "codex",
+      "provider": "native",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "profile": "read-only-evidence"
+    },
+    "maintainer": {
+      "host": "codex",
+      "provider": "native",
+      "model": "SET_VERIFIED_MODEL_ID",
+      "effort": "xhigh",
+      "profile": "read-only-evidence"
+    },
+    "scientific_reviewer": {
+      "host": "codex",
+      "provider": "native",
+      "model": "SET_VERIFIED_MODEL_ID",
+      "effort": "xhigh",
+      "profile": "read-only-evidence"
+    }
+  }
+}
