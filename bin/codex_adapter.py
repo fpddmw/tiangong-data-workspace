@@ -343,7 +343,7 @@ class CodexAdapter:
             return {'native_identity': native, 'native_status': 'unknown', 'result': None,
                     'reason': 'Original turn not found in its native thread.'}
 
-        from harness_discovery import observed_commands, observed_failures
+        from workspace_queries.discovery import observed_commands, observed_failures
         params = {'threadId': native['id'], 'turnId': native['turn_id'], 'limit': 100, 'sortDirection': 'asc'}
         final, latest_message = None, None
         commands, failures = [], []

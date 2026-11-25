@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
-import harness_legacy_knowledge as knowledge
+from workspace_queries import historical_methods as knowledge
 
 
 class HistoricalKnowledgeTests(unittest.TestCase):

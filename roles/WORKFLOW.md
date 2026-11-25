@@ -1,26 +1,15 @@
-# 科学工作主线
+# 科学工作方法入口
 
-从原目标、当前计划和完整工作体开始。角色责任见[协调合同](COORDINATION.md)；本页提供方法导航，作者依据实际问题选择工作顺序。
+[打开现行说明](../workflows/dataset-review/methods.md)。
 
-## One loop
+<a id="one-loop"></a>
+[One loop](../workflows/dataset-review/methods.md#one-loop)
 
-| 要解决的问题 | 原方法与能力 |
-|---|---|
-| 当前正文、身份、参考量和用途 | [候选准备](CANDIDATE-PREPARATION.md)、[数据规则](DATA-RULES.md) |
-| 结构、数量、单位和引用 | [机器检查](../workflows/dataset-review/门禁与引用检查.md) |
-| 科学结论是否可信 | 作者主动请求[独审](../workflows/dataset-review/科学独审.md)，按意见修订并复核影响 |
-| 获准保存及确认真实效果 | [保存与完整读回](../workflows/dataset-review/保存与读回.md) |
-| 成熟版本的正式提交和意见 | 主审接手[平台送审](../workflows/dataset-review/送审准备与实际送审.md) |
-| 原目标明确要求系统交付 | [系统规划](SYSTEM-PLANNING.md)，由系统负责人核连接和计算用途 |
+<a id="复用一次原生检查"></a>
+[复用一次原生检查](../workflows/dataset-review/methods.md#复用一次原生检查)
 
-## 复用一次原生检查
+<a id="minimal-handoff"></a>
+[Minimal handoff](../workflows/dataset-review/methods.md#minimal-handoff)
 
-以[实际工具绑定](../LOCAL_TOOLS.md)运行适用检查。内容、相关依赖和运行时仍适用的报告直接复用；实质变化只复核影响范围。原报告中的通过、警告、失败、未评估分别作为证据，由作者与独审判断科学影响。
-
-## Minimal handoff
-
-沿原包交付实际成果、用途与限制、准确对象及证据指针，补充变化、原尝试和接手事项。原运行与数据操作记录由各工具保管。
-
-## Closeout
-
-[主审](task-lead.md)按原目标判断采用与余项。保存、送审、审核、发布和系统使用分别以实际证据说明；适用终点取原任务，方法文档不追加其他阶段。共享故障交[维护者](maintainer.md)，其余有条件的工作继续。
+<a id="closeout"></a>
+[Closeout](../workflows/dataset-review/methods.md#closeout)

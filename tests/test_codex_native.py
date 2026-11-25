@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 import test_agent_runtime as fixtures
-import harness_sessions as sessions
+from task_ledger import sessions
 import harness_tasks as tasks
 from codex_scripted_provider import ScriptedProvider
 from codex_adapter import CodexAdapter

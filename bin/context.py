@@ -21,7 +21,6 @@ BUSINESS_ROLES = {
 }
 ORG_ROLES = ("global_main", "task_lead", "executor", "maintainer")
 ALL_ROLES = (*ROLES, *BUSINESS_ROLES)
-BUSINESS_CONTRACT = "roles/BUSINESS-FLOW.md"
 MAX_INPUT_BYTES = 4 * 1024 * 1024
 ROUTE_KINDS = ("system", "production", "knowledge", "history", "operations")
 
@@ -184,13 +183,13 @@ def workspace_module(name):
 
 
 def build_daily_context(root, *, role=None, task=None, request=None, query=None, limit=10, offset=0,detail=False):
-    current = workspace_module('harness_entry').current(root, task_id=task, request_id=request,
+    current = workspace_module('harness_snapshot').read(root, task_id=task, request_id=request,
                                                        limit=limit, offset=offset,detail=detail)
     result = {'schema': 'data-workspace.daily-context.v1', 'workspace': str(root.resolve()),
               'role': role, 'current': current,
               'entry': str(root.resolve() / 'AGENTS.md')}
     if query:
-        discovery = workspace_module('harness_discovery')
+        discovery = workspace_module('workspace_queries.discovery')
         result['capabilities'] = discovery.capabilities(root, query=query, limit=limit, offset=offset)
         result['assets'] = discovery.assets(root, query=query, limit=limit, offset=offset)
     return result
@@ -239,10 +238,10 @@ def main(argv=None):
                      'total': len(selected), 'offset': args.offset,
                      'next_offset': args.offset + args.limit if args.offset + args.limit < len(selected) else None}
         elif args.asset:
-            value = workspace_module('harness_discovery').assets(root, asset_id=args.asset,
+            value = workspace_module('workspace_queries.discovery').assets(root, asset_id=args.asset,
                 task_id=args.task,version=args.asset_version, limit=args.limit, offset=args.offset)
         elif args.method:
-            value = workspace_module('harness_legacy_knowledge').discover(root, method_id=args.method,
+            value = workspace_module('workspace_queries.historical_methods').discover(root, method_id=args.method,
                 limit=args.limit, offset=args.offset)
         else:
             value = build_daily_context(root, role=args.role, task=args.task, request=args.request,

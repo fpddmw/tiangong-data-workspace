@@ -12,6 +12,16 @@ export async function apply(ctx, config) {
     if(event.type==='turn/start'&&event.data.turn===2)
       queueMicrotask(()=>ctx.sessions.flush(session).then(()=>writeFileSync(config.flush_open_turn_marker,'native turn start flushed')))
   })
+  if (config.flush_open_turn_request) {
+    let turn
+    ctx.on('session/event', (session, event) => {
+      if (event.type === 'turn/start') turn = event.data.turn
+      if (turn === 2 && event.type === 'request/header') {
+        queueMicrotask(() => ctx.sessions.flush(session).then(() =>
+          writeFileSync(config.flush_open_turn_request, 'original active request flushed')))
+      }
+    })
+  }
   let step = 0, goal, review
   if (config.slow_flush_ms) {
     // Fault injection only: real persistence still writes all original bytes.
@@ -37,14 +47,19 @@ export async function apply(ctx, config) {
       let block
       if (!author) {
         const prompt=options.messages.flatMap(m=>m.content ?? []).filter(b=>b.type==='text').map(b=>b.text).join('\n')
+        if (config.reviewer_transport_error && !prompt.includes('Continue the original independent review')) {
+          yield {type:'finish',reason:{kind:'error',failure:{code:'PI_AI_ERROR',
+            message:'Error reading response: malformed server-sent event JSON.'}}}
+          return
+        }
         const delta=config.focused && /^完整字段和交换差异 (.+)$/m.exec(prompt)?.[1]
-        if (config.a02_verifier) {
+        if (config.opening_verifier) {
           const facts = /^审阅材料索引 (.+)$/m.exec(prompt)?.[1]
-          assert.ok(facts, 'A02 reviewer did not receive the frozen facts')
-          if (step++ === 0) block=call('local_check',{argv:[config.python,config.a02_verifier,facts]})
+          assert.ok(facts, 'Reviewer did not receive the frozen facts')
+          if (step++ === 0) block=call('local_check',{argv:[config.python,config.opening_verifier,facts]})
           else {
-            assert.match(JSON.stringify(tool.content),/A02-facts-verified/)
-            block=text('A02-facts-verified: retain the flux identity error, steelworks/rolling boundary and annual basis, and Furnes mass and electricity qualifications.')
+            assert.match(JSON.stringify(tool.content),/opening-review-facts-verified/)
+            block=text('opening-review-facts-verified: the frozen quantity, reference and source agree for this isolated review.')
           }
         } else if (delta && step++===0) block=call('local_check',{argv:[config.python,config.delta_verifier,delta]})
         else if (delta) {
@@ -57,15 +72,15 @@ export async function apply(ctx, config) {
             ? 'Scoped replay opinion: keep 0.021 kg per kg dry black mass distinct from 0.014883 kg per kg product in both languages.'
             : 'Independent opinion: use the dry-mass basis and verify the denominator.')
         }
-      } else if (config.phase === 'a02_review') {
+      } else if (config.phase === 'opening_review') {
         const actions = [
-          ()=>call('request_review',{artifacts:config.a02_artifacts,question:config.a02_question}),
+          ()=>call('request_review',{artifacts:config.opening_artifacts,question:'Check the frozen amount and its evidence.'}),
           ()=>call('review_result',{review_id:review,wait_seconds:30}),
-          ()=>{assert.match(JSON.stringify(tool.content),/A02-facts-verified/);return call('get_goal')},
+          ()=>{assert.match(JSON.stringify(tool.content),/opening-review-facts-verified/);return call('get_goal')},
           ()=>call('update_goal',{goal_id:goal.id,revision:goal.revision,action:'complete'}),
-          ()=>text('The original A02 frozen evidence and independent check were delivered.'),
+          ()=>text('The frozen evidence and independent check were delivered.'),
         ]
-        assert.ok(step<actions.length,'Unexpected extra A02 model action')
+        assert.ok(step<actions.length,'Unexpected extra first-review model action')
         block=actions[step++]()
       } else if (config.focused) {
         const actions=[
@@ -92,6 +107,23 @@ export async function apply(ctx, config) {
           if(options.signal.aborted) return reject(new Error('Cancelled'))
           options.signal.addEventListener('abort',()=>reject(new Error('Cancelled')),{once:true})
         });return}
+      } else if (config.phase === 'finish_recovery') {
+        if (step++ === 0) block=call('get_goal')
+        else if (step === 2) block=call('write',{file_path:config.candidate,content:'resumed once'})
+        else if (step === 3) block=call('update_goal',{goal_id:goal.id,revision:goal.revision,action:'complete'})
+        else block=text('Original interrupted Goal resumed and completed.')
+      } else if (config.phase === 'budget_exhaustion') {
+        block=step++===0 ? call('create_goal',{objective:'Finish original isolated evidence with an authorized Goal limit',max_goal_rounds:40})
+          : text('One original native round, with more work remaining.')
+      } else if (config.phase === 'budget_recovered') {
+        if (step++===0) block=call('get_goal')
+        else if (step===2) {
+          assert.equal(goal.maxGoalRounds,56)
+          assert.equal(goal.phase,'active')
+          block=text('The original Goal is armed. Work continues in its next native round.')
+        } else if (step===3) block=call('write',{file_path:config.candidate,content:'Original work after the authorized increase.'})
+        else if (step===4) block=call('update_goal',{goal_id:goal.id,revision:goal.revision,action:'complete'})
+        else block=text('The authorized budget was used and the original work is finished.')
       } else if (config.phase === 'pause') {
         if(step++===0) block=call('create_goal',{objective:'Isolated explicit pause check',max_goal_rounds:8})
         else if(step===2) block=call('update_goal',{goal_id:goal.id,revision:goal.revision,action:'pause'})

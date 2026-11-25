@@ -1,6 +1,6 @@
 """DeepSeek Harness headless transport for the existing agent runtime."""
 
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from collections import deque
 from datetime import datetime, timezone
 import hashlib
@@ -47,6 +47,62 @@ def _kind(event):
 def _code(error, fallback):
     value = error.get('code') if isinstance(error, dict) else None
     return value if isinstance(value, str) and NATIVE_CODE.fullmatch(value) else fallback
+
+
+def transport_diagnostic(error, timings, turn):
+    from dsh_auto_resume import classify
+    kind = classify(error)
+    if not kind:
+        return None
+    diagnostic = {'kind': kind, 'source': 'original_native_terminal', 'phase': 'unobserved'}
+    attempt = next((row for row in reversed(timings) if isinstance(row, dict)
+                    and str(row.get('turn')) == str(turn)), {}) if turn is not None else {}
+    if attempt.get('terminal') != 'error' or attempt.get('error_code') != error.get('code'):
+        return diagnostic
+    diagnostic.update(source='original_request_timing', turn=attempt['turn'], step=attempt.get('step'))
+    wire = (attempt.get('http') or [{}])[-1]
+    body = wire.get('sse_body') or {}
+    for key in ('first_byte_at_ms','last_byte_at_ms','bytes_received'):
+        if body.get(key) is not None:
+            diagnostic[key] = body[key]
+    if wire.get('request_ids'):
+        diagnostic['request_ids'] = wire['request_ids']
+    if type(attempt.get('context_tokens')) is int:
+        diagnostic['context_tokens'] = attempt['context_tokens']
+    if wire.get('client_traceparent'):
+        diagnostic['client_traceparent'] = wire['client_traceparent']
+    if kind == 'sse_json_decode':
+        failures = attempt.get('sse_failures') or []
+        if len(failures) == 1:
+            failure = failures[0]
+            frame = failure.get('frame') or {}
+            phase = {'blank_line': 'invalid_complete_event', 'eof': 'incomplete_event_at_eof'}.get(frame.get('boundary'))
+            diagnostic.update(phase=phase or 'unobserved', response=failure)
+    else:
+        last = wire
+        if attempt.get('first_content_at_ms') is not None:
+            diagnostic['phase'] = 'after_model_content'
+        elif last.get('headers_at_ms') is not None:
+            diagnostic['phase'] = 'after_headers_before_model_content'
+        elif last.get('failed_at_ms') is not None:
+            diagnostic['phase'] = 'before_response_headers'
+        if last.get('request_ids'):
+            diagnostic['request_ids'] = last['request_ids']
+        if body.get('error_event'):
+            diagnostic['response_error_event'] = body['error_event']
+        if (read_error := body.get('read_error')) and read_error.get('code')=='LLM_STREAM_IDLE_TIMEOUT':
+            diagnostic['local_idle_timeout'] = read_error
+    return diagnostic
+
+
+def retained_transport_diagnostic(result, native):
+    if not isinstance(result, dict):
+        return None
+    if diagnostic := result.get('transport_diagnostic'):
+        return diagnostic
+    activity = result.get('turn_activity') or {}
+    return transport_diagnostic(result.get('native_error'), activity.get('request_timings') or (),
+                                (native or {}).get('turn_id'))
 
 
 def _native_id(value):
@@ -115,6 +171,9 @@ class DeepSeekAdapter:
         paths = host.get('tool_path', [])
         if not isinstance(paths, list) or any(not isinstance(p, str) or not Path(p).is_absolute() for p in paths):
             raise CapabilityUnavailable('DSH tool_path must contain absolute runtime directories.')
+        idle = host.get('model_idle_watchdog_seconds', 180)
+        if not isinstance(idle, (int, float)) or isinstance(idle, bool) or not 0 < idle <= 3600:
+            raise CapabilityUnavailable('DSH model idle watchdog must be a positive number of seconds.')
         if config.get('profile') == 'native-workspace':
             configure_workspace_sandbox(root, config)
             if config['native_policy']['sandbox'] != 'workspace-write':
@@ -148,6 +207,7 @@ class DeepSeekAdapter:
         self.node = shutil.which(config['host']['node'])
         self.home = Path(config['host']['dsh_home'])
         self.process = None
+        self.process_lock = threading.RLock()
         self.native = None
         self.control = None
         self.control_fd = None
@@ -213,33 +273,41 @@ class DeepSeekAdapter:
         from dsh_capacity import is_pilot_provider
         pilot = is_pilot_provider(self.root, selection['provider'])
         diagnostic_directory = self.config.get('diagnostic_directory')
+        sse_diagnostics = ({'origin': sse, 'directory': diagnostic_directory, 'minimal': pilot, 'timings': pilot}
+                           if (sse or pilot) and diagnostic_directory else {'metadataOnly': True})
+        lease = self.config.get('_execution_lease')
+        disconnect = ({'path':str(lease.path.with_name('control-disconnected.json')),
+                       'run_id':lease.value['run_id'], 'request_id':lease.value['request_id']} if lease else None)
         return [
             {'id': 'agent-default-model', 'config': selection},
             {'id': 'session-title-llm', 'disabled': True},
             {'id': 'tool-bash', 'config': {'enableRunInBackground': False}},
             {'id': 'headless-runner', 'disabled': True},
             {'id': 'sandbox-policy', 'disabled': True},
-            {'insert': [{'id': 'htam-invocation', 'name': str(MODULE.with_name('dsh_runner.mjs')),
+            {'insert': [{'id': 'htam-invocation', 'name': str(MODULE.parent / 'dsh/runner.mjs'),
              'config': {'moduleEntry': self.config['host'].get('module_entry', self.binary), 'mode': self.mode,
-                        'technicalContinue': self.config.get('technical_continue', False)}},
-            {'id': 'htam-write-policy', 'name': str(MODULE.with_name('dsh_policy.mjs')),
+                        'technicalContinue': self.config.get('technical_continue', False),
+                        **({'goalBudget':self.config['goal_budget']} if self.config.get('goal_budget') else {})}},
+            {'id': 'htam-write-policy', 'name': str(MODULE.parent / 'dsh/policy.mjs'),
              'config': {'moduleEntry': self.config['host'].get('module_entry', self.binary),
                         'writeRoots': self.write_roots, 'mode': self.mode,
                         'workspaceRoot': str(self.cwd), 'additionalWritableRoots': self.write_roots}},
-            {'id':'htam-task-context','name':str(MODULE.with_name('dsh_context.mjs')),
+            {'id':'htam-task-context','name':str(MODULE.parent / 'dsh/context.mjs'),
              'inject':['systemPrompt','agents','goals'],'config':{'workspaceRoot':str(self.root),'python':sys.executable,
                  'snapshotEntry':str(MODULE.with_name('harness_context_hook.py')),
                  'requestId':self.config.get('task_request_id'),'runId':self.config.get('task_run_id')}}]},
             {'insert': [{'id': 'htam-native-tool-profile', 'name': str(MODULE),
                          'inject': ['tools', 'goals', 'agents', 'sandboxPolicy'], 'config': {'allow': tools, 'writeRoots': self.write_roots, 'controlFd': self.control_fd,
+                         'modelCapacity': self.config.get('_dsh_capacity') is not None,
+                         'modelActivityIntervalMs': min(5000, self.config['host'].get('model_idle_watchdog_seconds', 180)*250),
+                         'controlDisconnect': disconnect,
                          'moduleEntry': self.config['host'].get('module_entry', self.binary),
                          'timeoutRetries': {'provider': selection['provider'],
-                                            'recentTimeoutUntilMs': self.config.get('recent_timeout_until_ms', 0)},
+                                            'recentTimeoutUntilMs': self.config.get('recent_timeout_until_ms', 0),
+                                            'automaticProbe': self.config.get('automatic_recovery_probe', False)},
                          'tiangongCliTool': CONTROLLED_TOOLS['tiangong_cli'],
                          'reviewRequestTool': CONTROLLED_TOOLS['request_review'],
-                         **({'sseDiagnostics': {'origin': sse, 'directory': diagnostic_directory,
-                                               'minimal': pilot, 'timings': pilot}}
-                            if (sse or pilot) and diagnostic_directory else {})}}]},
+                         'sseDiagnostics': sse_diagnostics}}]},
         ]
 
     def _query(self, native):
@@ -333,6 +401,9 @@ class DeepSeekAdapter:
                 Path(directory).mkdir(parents=True, exist_ok=True, mode=0o700)
         except OSError as exc:
             raise NativeStartRejected('write_root_unavailable:' + type(exc).__name__) from exc
+        if self.config.get('role') in ('executor', 'scientific_reviewer'):
+            text += ('\n交付时在原生 final 写清结果、适用限制和完整工件路径；独审把完整意见写入 final。'
+                     '宿主随后自动登记原 run 的回件，主审和作者按职责接件。工作区任务库由宿主写入。')
         auth = self._editor_preflight()
         self.auth_available = auth is not None
         if auth is not None:
@@ -394,7 +465,7 @@ class DeepSeekAdapter:
 
         def wait_cancelled(ident):
             nonlocal control_input
-            if self.process.poll() is not None:
+            if self._exited():
                 return True
             # Cancellation travels over the existing duplex control socket, so
             # it remains readable while a result wait holds the stdout handler.
@@ -438,11 +509,19 @@ class DeepSeekAdapter:
         turn, end, final, rejected, native_error = None, None, None, None, None
         terminal_at = turn_started_at = None
         goal_observation = None
+        budget = self.config.get('goal_budget')
+        budget_observations, budget_error = [], None
         ambiguous = False
         calls, failures, shell, tool_results = {}, [], {}, set()
         call_turns, call_starts, call_ends, control_activity = {}, {}, {}, set()
         file_effects, proposed_reviews = {}, {}
         request_timings, retry_events, timeout_limits = [], [], []
+        capacity = self.config.get('_dsh_capacity')
+        permits = {}
+        model_seen = False
+        drain_deadline = None
+        watchdog_timeout = False
+        idle_budget = self.config['host'].get('model_idle_watchdog_seconds', 180)
         started = time.monotonic()
         stream_epoch = time.time()
         tool_seconds = 0.
@@ -451,9 +530,19 @@ class DeepSeekAdapter:
         try:
             while True:
                 guard()
+                now = time.monotonic()
+                if permits and now - min(permits.values()) >= idle_budget:
+                    watchdog_timeout = True
+                    self.close()
+                    break
+                if drain_deadline and now >= drain_deadline:
+                    self.close()
+                    break
                 try:
-                    line = queue.get(timeout=0.5)
+                    line = queue.get(timeout=min(0.5, idle_budget) if permits else 0.5)
                 except Empty:
+                    if self._exited():
+                        break  # A detached tool may still hold the stdout pipe.
                     continue
                 if line is None:
                     break
@@ -468,9 +557,28 @@ class DeepSeekAdapter:
                 event_type = event.get('type')
                 if event_type == 'htam_control':
                     guard()
-                    reply = self.controlled.dispatch(event.get('kind'), event.get('text'), guard=guard,
-                                                     cancelled=lambda: wait_cancelled(event.get('id')))
-                    kind, detail = event.get('kind'), reply.get('diagnostic')
+                    kind, ident = event.get('kind'), event.get('id')
+                    if kind == 'model_enter' and capacity:
+                        if not self.native or type(ident) is not int or ident in permits or wait_cancelled(ident):
+                            raise ValueError('Original model admission lost its native identity or control channel')
+                        def model_guard():
+                            guard()
+                            if wait_cancelled(ident):
+                                raise ValueError('Original model request was cancelled before admission')
+                        capacity.admit_model_request(model_guard)
+                        permits[ident] = time.monotonic()
+                        model_seen = True
+                        reply = {'accepted': True, 'permit': ident}
+                    elif kind=='goal_budget':
+                        from harness_tasks import read_run
+                        source = read_run(self.root,budget['original_run_id']) if budget else None
+                        reply = {'accepted':bool(source and self.native and self.native['id']==budget['session_id']
+                            and self.config['role']=='executor' and turn is None and not source['stop_requested']
+                            and not wait_cancelled(ident) and json.loads(event.get('text') or 'null')==budget)}
+                    else:
+                        reply = self.controlled.dispatch(kind, event.get('text'), guard=guard,
+                                                         cancelled=lambda: wait_cancelled(ident))
+                    detail = reply.get('diagnostic')
                     if reply.get('accepted') and isinstance(detail, dict) and (
                             kind == 'request_review' and detail.get('review_id') and detail.get('state') in ('requested','intent','running','succeeded')
                             or kind == 'review_result' and detail.get('state') == 'received'
@@ -492,6 +600,10 @@ class DeepSeekAdapter:
                     native_error = safe_diagnostic(event.get('message'))
                     if event.get('native_status') == 'not_started':
                         rejected = _code(event, 'NativeSetupFailed')
+                elif self.native and budget and event_type=='error' and turn is None:
+                    budget_error={'code':_code(event,'DSHGoalBudgetError'),'message':safe_diagnostic(event.get('message'))}
+                elif self.native and budget and event_type=='htam_goal_budget' and event.get('sessionId')==self.native['id']:
+                    budget_observations.append({'stage':event.get('stage'),'goal':event.get('goal')})
                 elif self.native and event_type == 'status':
                     phase, value = event.get('phase'), event.get('turn')
                     if phase == 'turn_start':
@@ -518,6 +630,10 @@ class DeepSeekAdapter:
                         else:
                             end = event
                             terminal_at = datetime.now(timezone.utc).isoformat()
+                            if _kind(end) in ('error', 'aborted'):
+                                drain_deadline = time.monotonic() + 2
+                                if model_seen and not permits:
+                                    capacity.close_model()
                 elif (event_type == 'htam_goal_state' and self.native and end
                       and event.get('sessionId') == self.native['id'] and event.get('turn') == turn
                       and event.get('source') == 'dsh_live_agent'):
@@ -526,6 +642,7 @@ class DeepSeekAdapter:
                     if final is not None or not end:
                         ambiguous = True
                     final = event
+                    drain_deadline = time.monotonic() + 2
                 elif self.native and event_type == 'htam_request_header':
                     headers += 1
                 elif self.native and event_type == 'htam_response_attempt':
@@ -534,6 +651,12 @@ class DeepSeekAdapter:
                     request_timings.append({k:v for k,v in event.items() if k != 'type'})
                 elif self.native and event_type == 'htam_request_retry':
                     retry_events.append({k:v for k,v in event.items() if k != 'type'})
+                    if (model_seen and not permits and event.get('phase') == 'scheduled' and event.get('turn') == turn):
+                        capacity.wait_for_retry(guard)
+                elif event_type == 'htam_model_closed':
+                    permits.pop(event.get('permit'), None)
+                elif event_type == 'htam_model_activity' and event.get('permit') in permits:
+                    permits[event['permit']] = time.monotonic()
                 elif self.native and event_type == 'htam_timeout_limit':
                     timeout_limits.append({k:v for k,v in event.items() if k != 'type'})
                 elif self.native and event_type == 'tool_call':
@@ -560,10 +683,19 @@ class DeepSeekAdapter:
                         if event.get('status') == 'error':
                             failures.append({'native_item_id': call, 'tool_name': calls[call], 'kind': 'tool_error',
                                              'error_class': _code(event.get('error'), 'DSHToolError')})
-            code = self.process.wait()
+            try:
+                with self.process_lock:
+                    code = self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.close()
+                code = self.process.returncode
+            if model_seen:
+                capacity.close_model()
             stderr_reader.join(timeout=1)
         except BaseException:
             self.close()
+            if model_seen and self._exited():
+                capacity.close_model()
             # A descendant may retain stdout after the direct process exits.
             # Cleanup must never wait forever for a pipe EOF.
             deadline = time.monotonic() + 2
@@ -602,9 +734,21 @@ class DeepSeekAdapter:
                             usage=_total_usage(steps, usage),
                             tools={'tools_called': sorted(set(calls.values())), 'tool_failures': failures,
                                    'shell_results': shell_results})
-        if final and _kind(final) == 'error':
+        if budget:
+            result['native_goal_budget']={'decision':budget,'observations':budget_observations,
+                                          **({'error':budget_error} if budget_error else {})}
+            if budget_error:
+                result['native_diagnostic']=budget_error['code']
+        if watchdog_timeout:
+            result['transport_status'] = 'model_watchdog_timeout'
+            result['transport_diagnostic'] = {'kind':'transport_timeout', 'source':'original_model_watchdog',
+                                              'phase':'no_model_progress', 'turn':turn}
+        if status == 'failed':
             from safe_diagnostics import safe_error
             result['native_error'] = safe_error(final['reason'].get('error'))
+            diagnostic = transport_diagnostic(result['native_error'], request_timings, turn)
+            if diagnostic:
+                result['transport_diagnostic'] = diagnostic
         native_activity = [call for call in call_ends if calls[call] in ('read','write','edit')
                            or calls[call]=='bash' and shell.get(call)==0
                            or (call_turns[call],calls[call]) in control_activity]
@@ -625,6 +769,23 @@ class DeepSeekAdapter:
                 if first_action is not None else None}
         return result
 
+    def _original_control_disconnect(self, native):
+        from harness_tasks import read_run
+        lease = self.config.get('_execution_lease')
+        directory = lease.path.parent if lease else self.config.get('_native_run_directory')
+        if not directory or not self.config.get('task_run_id'):
+            return False
+        try:
+            directory = Path(directory)
+            archived = json.loads((directory/'control-disconnected.json').read_bytes())
+            binding = json.loads((directory/'execution.json').read_bytes())
+            run = read_run(self.root, self.config['task_run_id'])
+            return (not run['stop_requested'] and run['native_identity'] == native
+                    and archived == {'run_id':run['id'], 'request_id':run['request_id'],
+                        'sessionId':native['id'], 'turn':int(native['turn_id']), 'pid':binding['child']['pid']})
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
     def readresult(self, native, *, boundary=None):
         with (boundary or nullcontext)():
             observed = self._query(native)
@@ -641,13 +802,21 @@ class DeepSeekAdapter:
                     return self._apply_route({'native_identity':native, 'native_status':'completed', 'result':final,
                         'native_context':{'cwd':str(self.cwd)}, 'metering':{'usage':None,'cost_usd':None}}, observed)
             if exact and terminal == 'aborted':
+                if self._original_control_disconnect(native):
+                    return self._apply_route({'native_identity':native, 'native_status':'unknown', 'result':None,
+                        'native_context':{'cwd':str(self.cwd)}, 'metering':{'usage':None,'cost_usd':None},
+                        'transport_status':'original_control_disconnected'}, observed)
                 return self._apply_route({'native_identity':native, 'native_status':'interrupted', 'result':None,
                     'native_context':{'cwd':str(self.cwd)}, 'metering':{'usage':None,'cost_usd':None},
                     'stop_confirmed':True}, observed)
             if exact and terminal == 'error':
+                from safe_diagnostics import safe_error
+                error = safe_error(observed.get('native_error'))
+                diagnostic = transport_diagnostic(error, (), native.get('turn_id'))
                 return self._apply_route({'native_identity':native, 'native_status':'failed', 'result':None,
                     'native_context':{'cwd':str(self.cwd)}, 'metering':{'usage':None,'cost_usd':None},
-                    'native_diagnostic':_code(observed.get('native_error'), 'DSHNativeTurnFailed')}, observed)
+                    'native_error':error, 'native_diagnostic':_code(error, 'DSHNativeTurnFailed'),
+                    **({'transport_diagnostic':diagnostic} if diagnostic else {})}, observed)
             return self._apply_route({'native_identity':native, 'native_status':'unknown',
                 'result': observed.get('final_text') if observed.get('source') == 'dsh_persisted_session_log' else None,
                 'native_diagnostic':'original_session_still_active_or_terminal_unavailable'}, observed)
@@ -658,19 +827,50 @@ class DeepSeekAdapter:
                 self.close()
             return self.readresult(native)
 
+    def _exited(self):
+        with self.process_lock:
+            return self.process.poll() is not None
+
     def close(self):
-        if self.process:
-            try:
-                os.killpg(self.process.pid, signal.SIGTERM)
-            except ProcessLookupError:
+        from execution_lease import _process_snapshot
+
+        with self.process_lock:
+            process = self.process
+            if not process or process.poll() is not None:
                 return
+            if self.control:
+                try:
+                    self.control.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
             try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                pass
-            # Also close descendants which still own the transport pipe.
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                process.wait(timeout=2)
+                return
+            except PermissionError:
+                if _process_snapshot(group=process.pid):
+                    raise
+                process.wait(timeout=2)
+                return
+            # Keep our original group leader unreaped until after the final
+            # signal. Its PID cannot be reused while a descendant holds a pipe.
+            if hasattr(select, 'kqueue'):
+                with closing(select.kqueue()) as kernel:
+                    try:
+                        kernel.control([select.kevent(process.pid, filter=select.KQ_FILTER_PROC,
+                            flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT)], 1, 2)
+                    except ProcessLookupError:
+                        pass
+            else:
+                time.sleep(2)
             try:
-                os.killpg(self.process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            self.process.wait(timeout=2)
+            except PermissionError:
+                # Darwin can reject a group signal after its last live member
+                # exits. Only a fresh all-UID group observation can settle it.
+                if _process_snapshot(group=process.pid):
+                    raise
+            process.wait(timeout=2)

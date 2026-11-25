@@ -24,7 +24,7 @@ def launch_spec(root, run):
 def author_lineage(c, request):
     """Exact author requests, newest first. Never infer identity from names."""
     import harness_tasks as t
-    import harness_finite_work as finite
+    from task_ledger import finite_work as finite
     if request['independent'] or request['kind'] != 'plan':
         return [request['id']]
     configs = finite.request_configs(c, request['task_id'])
@@ -57,11 +57,80 @@ def predecessor(root, request):
         return t._run_view(c, row) if row is not None and row['request_id'] != request['id'] else None
 
 
+def missing_devin_writer(c, root, request, original_request_id):
+    """A new author may take over an ended writer whose Session never received a prompt."""
+    import harness_tasks as t
+    lineage=author_lineage(c,t._decode(request))
+    if original_request_id not in lineage[1:]:
+        return None
+    if any(t.pending_runs(c,ident) for ident in lineage[1:] if ident!=original_request_id):
+        return None
+    return ended_devin_writer(c,root,original_request_id)
+
+
+def ended_devin_writer(c, root, original_request_id):
+    """Read the original host's evidence without loading or prompting the Session."""
+    from pathlib import Path
+    from agent_base import read_receipt
+    from devin_acp import pre_prompt_rejection
+    from execution_lease import observe_run
+    from harness_hosts import confirmed_not_started
+    from production_review import scientific_path
+    import harness_tasks as t
+    request=t._row(c,'work_requests',original_request_id)
+    if t._delegation_decisions(c,request['task_id']).get(original_request_id,{}).get('action')!='end':
+        return None
+    attempts=[t._decode(row) for row in c.execute('SELECT * FROM work_runs WHERE request_id=? ORDER BY created_at DESC,id DESC',
+                                               (original_request_id,))]
+    if not attempts or c.execute('SELECT 1 FROM work_returns WHERE request_id=? LIMIT 1',(original_request_id,)).fetchone():
+        return None
+    last=attempts[0]
+    if last['target_host']!='devin_cli' or last['outcome']!='failed' or last.get('native_identity'):
+        return None
+    try:
+        last=t._run_view(c,t._row(c,'work_runs',last['id']))
+        receipt=read_receipt(root,last['latest_receipt'])
+        if not confirmed_not_started(receipt,host='devin_cli',run_id=last['id'],request_id=original_request_id,
+                                     config_sha256=last['config_ref']['sha256']):
+            return None
+        launch=launch_spec(root,last)
+        target=launch.get('requested_session_id')
+        parent=next((r for r in attempts if r['id']==launch.get('native_parent_run_id')),None)
+        if not target or not parent or (parent.get('native_identity') or {}).get('id')!=target:
+            return None
+        for run in attempts:
+            home=launch_spec(root,run).get('evidence_home')
+            if not home or run['target_host']!='devin_cli' or observe_run(root,run)['state']!='exited':
+                return None
+            directory=scientific_path(root,Path(home)/'runs'/run['id'],must_exist=False)
+            if not directory.is_dir() or any((directory/'delivery').glob('operation-*')):
+                return None  # Existing operation evidence needs its own original reconciliation.
+            log=scientific_path(root,directory/'acp.jsonl')
+            transcript=[json.loads(line) for line in log.read_bytes().splitlines() if line.strip()]
+            if not transcript or any(not isinstance(row,dict)
+                    or (row.get('direction')=='client' and row.get('method')=='session/prompt')
+                    or (row.get('direction')=='agent' and row.get('method') and 'id' in row) for row in transcript):
+                return None
+            if run['id']==last['id']:
+                fact=pre_prompt_rejection(transcript,session_id=target) or {}
+                error=fact.get('error') or {}
+                if fact.get('method')!='session/load' or (error.get('data') or {}).get('cognition.ai/errorKind')!='session_not_found':
+                    return None
+        return {'request_id':original_request_id,'run_id':last['id'],'receipt':last['latest_receipt'],
+                'target_session':target,'state':'session_missing_before_prompt'}
+    except (OSError,ValueError,KeyError,TypeError):
+        return None
+
+
 def admit_author_run(c, request, operation, previous_id):
     """Called inside the original run-intent transaction, before any native effect."""
     import harness_tasks as t
     from harness_hosts import supports
     ids = author_lineage(c, request)
+    latest = latest_author(c, request)
+    if operation=='start' and not previous_id and latest and latest['request_id']!=request['id']:
+        if proof:=missing_devin_writer(c,t.workspace_root(c),request,latest['request_id']):
+            return proof
     for ident in ids:
         for pending in t.pending_runs(c, ident):
             if (pending['id'] == previous_id and pending['request_id'] == request['id'] and operation == 'resume'
@@ -69,7 +138,6 @@ def admit_author_run(c, request, operation, previous_id):
                 t.session_origin(c, pending)
             else:
                 t._fail('run_recovery_required', 'Original package has an in-flight or unknown run; reconcile ' + pending['id'], request['id'])
-    latest = latest_author(c, request)
     if latest is None:
         if operation != 'start' or previous_id:
             t._fail('original_attempt_required', 'Select an existing native attempt before resuming', request['id'])
@@ -121,7 +189,7 @@ def historical_snapshot(root, task_id=None):
     import contextlib
     from pathlib import Path
     import harness_tasks as t
-    import harness_finite_work as finite
+    from task_ledger import finite_work as finite
     packages, unassigned = {}, []
     def load(ref):
         try:
@@ -236,7 +304,7 @@ def historical_snapshot(root, task_id=None):
 def input_status(root, request):
     import contextlib
     import harness_tasks as t
-    import harness_finite_work as finite
+    from task_ledger import finite_work as finite
     with contextlib.closing(t._connect(root, True)) as c:
         configs = finite.request_configs(c, request['task_id'])
         refs, unavailable = [], []

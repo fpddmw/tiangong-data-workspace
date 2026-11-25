@@ -260,14 +260,14 @@ def ingest_capture(root, actor, payload):
 
 
 def admit_maintenance(c, request_id):
-    import harness_maintenance
+    from task_ledger import maintenance as harness_maintenance
     decision = harness_maintenance.state(c, request_id)
     if decision['state'] in ('closed', 'verified', 'duplicate', 'deferred'):
         core()._fail('maintenance_closed_or_deferred', 'Read the original explicit maintenance decision before reopening.', request_id)
 
 
 def maintenance_is_disposed(c, request_id):
-    import harness_maintenance
+    from task_ledger import maintenance as harness_maintenance
     decision = harness_maintenance.state(c, request_id)
     return decision['state'] in ('closed', 'verified', 'duplicate') and not harness_maintenance.new_observations(c, request_id, decision)
 
@@ -340,7 +340,7 @@ def dispose(root, actor, request_id, decision, note_path, *, revision_request_id
 
 
 def maintenance_projection(root, c, row):
-    import harness_maintenance
+    from task_ledger import maintenance as harness_maintenance
     ref = json.loads(row['source_ref_json'])
     return {'request_id':row['request_id'], 'source_ref':ref,
             'decision':harness_maintenance.state(c,row['request_id']),
@@ -395,7 +395,7 @@ def _related_maintenance(root, c, task_id, request_ids):
         item['affected_request_ids'] = sorted(item['affected_request_ids'])
         item['observations'] = [{'source_ref': ref, 'integrity': knowledge.integrity(root, ref)}
                                 for ref in item['observations'].values()]
-        import harness_maintenance
+        from task_ledger import maintenance as harness_maintenance
         item['decision'] = harness_maintenance.state(c,finding_id)
         item['new_observations'] = harness_maintenance.new_observations(c,finding_id,item['decision'])
         item['returns'] = [core()._decode(r) for r in c.execute(

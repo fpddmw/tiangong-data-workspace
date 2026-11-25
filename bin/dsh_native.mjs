@@ -1,14 +1,14 @@
 // Native Cordis tool policy and exact-session query for DSH 0.2.2-rc.1.
 import { createRequire } from 'node:module'
-import { realpathSync } from 'node:fs'
+import { realpathSync, writeFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
-import { controlChannel } from './dsh_goal.mjs'
+import { bindOriginalGoalControl, controlChannel } from './dsh_goal.mjs'
 import { safeError, safeText } from './safe_diagnostics.mjs'
 import { installSseDiagnostics } from './dsh_sse_diagnostics.mjs'
-import { installIdentityRefresh, installReviewRequest, installReviewResult, installLocalCheck, installFindingReport, installTiangongCli } from './dsh_delivery.mjs'
+import { installIdentityRefresh, installReviewRequest, installReviewResult, installLocalCheck, installFindingReport, installTiangongCli } from './dsh/delivery.mjs'
 
-export function limitTimeoutRetries(ctx, {provider, recentTimeoutUntilMs = 0}, now = Date.now) {
+export function limitTimeoutRetries(ctx, {provider, recentTimeoutUntilMs = 0, automaticProbe = false}, now = Date.now) {
   const attempts = new WeakMap()
   return ctx.on('agent/request-error', (request, next) => {
     const {agent, turn, step, provider: selected, failure} = request
@@ -21,20 +21,65 @@ export function limitTimeoutRetries(ctx, {provider, recentTimeoutUntilMs = 0}, n
     if (current?.turn !== turn || current?.step !== step) {
       // Keep the original recovery path available after an isolated stall.
       // A recent terminal timeout of this same continuation is stronger evidence.
-      current = {turn, step, failures:0, limit:now() < recentTimeoutUntilMs ? 2 : 5}
+      current = {turn, step, failures:0, recent:now() < recentTimeoutUntilMs}
+      current.limit = automaticProbe || current.recent ? 2 : 5
       attempts.set(agent.session, current)
     }
     if (++current.failures < current.limit) return next()
     process.stdout.write(JSON.stringify({type:'htam_timeout_limit', turn, step, failures:current.failures,
-      previous_terminal_timeout:current.limit === 2}) + '\n')
+      previous_terminal_timeout:current.recent}) + '\n')
     // Returning without a recovery decision leaves the original native error intact.
+  }, {prepend:true})
+}
+
+function installModelAdmission(ctx, channel, activityIntervalMs, disconnect) {
+  let turn, sessionId
+  ctx.on('session/event', (session, event) => {
+    if (event.type === 'turn/start') {
+      sessionId = session.id
+      turn = event.data.turn
+    }
+  })
+  channel.disconnected.addEventListener('abort', () => {
+    // The installed runtime freezes GenerateOptions. Close this exact native
+    // transport to end any request already in progress when its owner dies.
+    if (disconnect && sessionId && Number.isInteger(turn)) {
+      const {path, ...binding} = disconnect
+      try {writeFileSync(path, JSON.stringify({...binding, sessionId, turn, pid:process.pid})+'\n', {flag:'wx',mode:0o600})}
+      catch { /* Missing proof leaves the original native abort unresolved for recovery. */ }
+    }
+    setTimeout(() => process.exit(2), 2000).unref()
+    ctx.appExit(2)
+  }, {once:true})
+  return ctx.on('llm/stream', async function* (options, next) {
+    const signal = options.signal ? AbortSignal.any([options.signal, channel.signal]) : channel.signal
+    signal.throwIfAborted()
+    const admitted = await channel.request('model_enter', undefined, signal)
+    if (!admitted.accepted) throw new Error('Original host withheld the model request')
+    try {
+      signal.throwIfAborted()
+      let lastActivity = -Infinity
+      for await (const chunk of next()) {
+        const now = performance.now()
+        if (now - lastActivity >= activityIntervalMs && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta' ||
+            chunk.type === 'tool-call-delta' || chunk.type === 'block-end')) {
+          lastActivity = now
+          process.stdout.write(JSON.stringify({type:'htam_model_activity', permit:admitted.permit}) + '\n')
+        }
+        yield chunk
+      }
+    } finally {
+      process.stdout.write(JSON.stringify({type:'htam_model_closed', permit:admitted.permit}) + '\n')
+    }
   }, {prepend:true})
 }
 
 export function apply(ctx, config) {
   const { allow } = config
   const channel = controlChannel(config.controlFd)
+  bindOriginalGoalControl(channel)
   if (channel) ctx.effect(() => () => channel.close())
+  if (channel && config.modelCapacity) installModelAdmission(ctx, channel, config.modelActivityIntervalMs, config.controlDisconnect)
   ctx.on('agent/created', ({ agent }) => {
     agent.ctx.tools.restrict({ allow })
   })

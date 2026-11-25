@@ -36,8 +36,11 @@ class DevinRuntimeTests(unittest.TestCase):
 
     def test_shared_review_assembly_uses_host_capability_and_no_dsh_slot(self):
         self.select_devin()
-        with patch.object(dsh_capacity, 'Capacity', side_effect=AssertionError('Devin cannot claim DSH seats')):
-            result = self.execute(program_context={})
+        result = self.execute(program_context={})
+        run = runtime.Runtime(self.root).core.read_run(self.root, result['run_id'])
+        events = [e['payload'] for e in run['events'] if e['kind'] == 'capacity']
+        self.assertEqual([e['phase'] for e in events[:2]], ['queued', 'admitted'])
+        self.assertTrue(all(Path(e['queue_source']).name == 'devin-capacity.json' for e in events))
         self.assertEqual(result['outcome'], 'succeeded')
         returned = runtime.read_receipt(self.root, result['receipt'])['result']
         self.assertEqual(returned['requested_review_ids'], [])
@@ -57,6 +60,44 @@ class DevinRuntimeTests(unittest.TestCase):
             role='executor', evidence_home=str(self.home))
         self.assertEqual(recovered['receipt'], result['receipt'])
         self.assertEqual(recovered['native_identity']['id'], 'fixture-devin')
+
+    def test_closed_setup_without_prompt_is_recovered_without_loading_session(self):
+        self.select_devin()
+
+        class ExitedAfterSetup:
+            def __init__(self, root, config):
+                self.root,self.config = root,config
+
+            def execute(self,text,observe,guard,*,boundary,**kwargs):
+                with boundary():
+                    child = subprocess.Popen(['/usr/bin/true'],start_new_session=True)
+                    self.config['_execution_lease'].spawned(child)
+                child.wait(timeout=3)
+                native = runtime.identity('devin_cli','session','fixture-no-prompt',self.root)
+                observe(native,'session_ready',{})
+                rows = []
+                for index,(method,params,result) in enumerate([
+                        ('initialize',{}, {'protocolVersion':1}),
+                        ('session/new',{}, {'sessionId':native['id']}),
+                        ('session/set_mode',{'sessionId':native['id']}, {})],1):
+                    rows.append({'direction':'client','id':index,'method':method,'params':params})
+                    rows.append({'direction':'agent','jsonrpc':'2.0','id':index,'request_method':method,'result':result})
+                path = Path(self.config['diagnostic_directory']).parent/'acp.jsonl'
+                path.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+                raise ACPError('session/set_mode','Synthetic transport exited')
+
+            def close(self):
+                pass
+
+        self.factory = ExitedAfterSetup
+        with self.assertRaises(ACPError):
+            self.execute(program_context={})
+        worker = runtime.Runtime(self.root,adapter_factory=lambda *_:self.fail('Recovery must not start a transport'))
+        self.assertEqual(worker._reconcile_devin_setup_exit(worker.core.read_run(self.root,'run'))['outcome'],'unknown')
+        with patch('execution_lease.observe_run',return_value={'state':'exited'}):
+            observed = worker.readresult(run_id='run',config_path=None,role='executor',evidence_home=str(self.home))
+        self.assertEqual((observed['outcome'],observed['execution_state'],observed['target_session']),
+                         ('failed','not_started','fixture-no-prompt'))
 
     def legacy_load_refusal(self,*,prompt=False):
         self.select_devin();first=self.execute(program_context={})
@@ -102,6 +143,91 @@ class DevinRuntimeTests(unittest.TestCase):
         value=worker.readresult(run_id='rejected',config_path=None,role='executor',evidence_home=str(self.home))
         self.assertEqual(value['execution_state'],'launch_unresolved')
         self.assertEqual(worker.core.read_run(self.root,'rejected')['outcome'],'unknown')
+
+    def test_ended_missing_session_admits_only_one_authorized_successor(self):
+        import harness_package
+        import run_worker
+        from task_ledger import sessions
+        import harness_tasks as tasks
+
+        self.select_devin()
+        author=runtime.identity('devin_cli','session','missing-original',self.root)
+
+        class RejectedBeforePrompt:
+            def __init__(self,root,config):
+                self.config=config
+
+            def execute(self,text,observe,guard,*,requested_session_id,boundary,**kwargs):
+                with boundary():
+                    guard()
+                    self.process=subprocess.Popen(['/usr/bin/true'],start_new_session=True)
+                    self.config['_execution_lease'].spawned(self.process)
+                self.process.wait(timeout=3)
+                transcript=[{'direction':'client','id':1,'method':'initialize'},
+                            {'direction':'agent','jsonrpc':'2.0','id':1,'result':{'protocolVersion':1}}]
+                if requested_session_id:
+                    transcript.append({'direction':'client','id':2,'method':'session/load',
+                                       'params':{'sessionId':requested_session_id}})
+                    transcript.append({'direction':'agent','jsonrpc':'2.0','id':2,'error':{
+                        'code':-32002,'data':{'cognition.ai/errorKind':'session_not_found'}}})
+                    failure=harness_hosts.NativeStartRejected('acp_request_rejected_before_prompt')
+                else:
+                    transcript.append({'direction':'client','id':2,'method':'session/new'})
+                    transcript.append({'direction':'agent','jsonrpc':'2.0','id':2,'result':{'sessionId':author['id']}})
+                    observe(author,'inProgress',{})
+                    failure=harness_hosts.NativeStartRejected('native_configuration_unavailable_before_prompt',
+                                                               ready_thread=author,phase='before_prompt')
+                path=Path(self.config['diagnostic_directory']).parent/'acp.jsonl'
+                path.write_text(''.join(json.dumps(row)+'\n' for row in transcript))
+                raise failure
+
+            def close(self):
+                pass
+
+        self.factory=RejectedBeforePrompt
+        with self.assertRaises(runtime.CapabilityUnavailable):
+            self.execute(program_context={})
+        with self.assertRaises(runtime.CapabilityUnavailable):
+            self.execute(run_id='missing',operation='resume',previous_run_id='run',program_context={})
+        note=self.home/'end-original.md'
+        note.write_text('The old Session is missing before its first prompt. End the original delegation.')
+        tasks.end_delegation(self.root,self.actor,'request',note)
+        brief=self.home/'successor.md'
+        brief.write_text('Continue the same original scope with one author.')
+        successor=sessions.request(self.root,self.actor,'task',brief,scope_ids=['science'],continues='request')
+        with contextlib.closing(tasks._connect(self.root,True)) as c:
+            proof=harness_package.missing_devin_writer(c,self.root,successor,'request')
+            self.assertEqual(proof['target_session'],author['id'])
+            with patch.object(leases,'observe_run',return_value={'state':'active'}):
+                self.assertIsNone(harness_package.missing_devin_writer(c,self.root,successor,'request'))
+            log=self.home/'runs'/'run'/'acp.jsonl'
+            original=log.read_bytes()
+            log.write_bytes(original+b'{"direction":"client","id":3,"method":"session/prompt"}\n')
+            self.assertIsNone(harness_package.missing_devin_writer(c,self.root,successor,'request'))
+            log.write_bytes(original)
+        with tasks.transaction(self.root) as c:
+            c.execute('SAVEPOINT before_late_return')
+            tasks.apply(c,self.root,'return',self.actor,{'id':'late','request_id':'request',
+                'result_ref':self.evidence,'summary':'A late result from the original delegation.'})
+            self.assertIsNone(harness_package.missing_devin_writer(c,self.root,successor,'request'))
+            c.execute('ROLLBACK TO before_late_return')
+            c.execute('RELEASE before_late_return')
+        launches=[]
+        def factory(root,config):
+            adapter=fixtures.CompletedAdapter(root,config,author=runtime.identity('devin_cli','session','new-author',root))
+            launches.append(adapter)
+            return adapter
+
+        worker=runtime.Runtime(self.root,adapter_factory=factory)
+        config=runtime.load_config(self.root,self.config_path,'executor')
+        answer=run_worker._drive_program(self.root,worker,successor,config)
+        self.assertEqual(answer['outcome'],'succeeded')
+        self.assertEqual(answer['native_identity']['id'],'new-author')
+        retained=tasks.read_run(self.root,answer['run_id'])
+        self.assertEqual(next(event['payload']['writer_replacement'] for event in retained['events'] if event['kind']=='intent'),proof)
+        self.assertEqual(run_worker._drive_program(self.root,worker,successor,config)['run_id'],answer['run_id'])
+        self.assertEqual(len(launches),1)
+        self.assertEqual(tasks.read_run(self.root,'missing')['outcome'],'failed')
 
     def test_devin_hook_uses_shared_snapshot_and_restores_after_invalidation(self):
         import devin_context_hook

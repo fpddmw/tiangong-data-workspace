@@ -1,6 +1,6 @@
 # 当前送审与预检能力
 
-当前 CLI 为 0.4.4。`review submit/resubmit --input /ABS/REQUEST.json --dry-run --json` 检查当前可读前提，正式提交由服务器准入。本人审核用 `review list --role submitter --json`，已知审核号用 `review get --id REVIEW_ID --json`。
+`review submit/resubmit --input /ABS/REQUEST.json --dry-run --json` 检查当前可读前提。受管入口沿原采用和原生请求，宿主核授权、前像及准确关联范围后送审。0.4.5 的预检将服务端关联范围列为未核，当前具名逐根授权下，该根暂缓并保留原选择。只有服务端在写入时能约束到已授权的范围，才能恢复这类正式提交。[天工 CLI #548](https://github.com/tiangong-lca/cli/issues/548)。本人审核用 `review list --role submitter --json`，已知审核号用 `review get --id REVIEW_ID --json`。[当前安装](data-cli.md) · [受管送审](../../workflows/dataset-review/送审准备与实际送审.md#执行并核真实效果) · [预检资格记录](../../installation/maintenance-20261121-board/wave-execution-20261122.md)
 
 读取平台可见意见，用 `review opinions --id REVIEW_ID --json`；只有对象版本时，用 `review opinions --type process --data-id UUID --data-version 01.00.000 --json`，按实际类型和版本替换。按版本查询时，检查 `completeness.hasMore`，有续页则沿原筛选传 `--cursor`。返回的是当前账号实际可见的意见；作者可读平台退回的 Process 意见，可见意见为空不能说明没有评审。正式作者对一条退回审核按两种入口读到同样的 3 条意见，且提交正文校验和与 `review get` 一致。[本机实际回验](../../installation/maintenance-20261119-cli-536/release-opinions-readback.json)
 

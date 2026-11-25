@@ -58,13 +58,43 @@ def _save_fixed(root, path, raw):
     return {'path': str(path.resolve()), 'sha256': entry.sha256(raw)}
 
 
+def freeze_validation_report(root, home, source, raw):
+    """Freeze only the native reports named and hashed by this validation report."""
+    if b'data-workspace.lca-gate.v4' not in raw:
+        return None
+    try:
+        report = json.loads(raw)
+    except (ValueError, UnicodeError):
+        return None
+    if not isinstance(report,dict) or report.get('schema')!='data-workspace.lca-gate.v4':
+        return None
+    root = Path(root).resolve()
+    checks = report.get('checks')
+    for check in checks if isinstance(checks, list) else ():
+        if not isinstance(check,dict) or not isinstance(check.get('native_report'),str):
+            continue
+        relative = Path(check['native_report'])
+        if relative.is_absolute():
+            continue  # Kept as an exact original path in the report.
+        try:
+            location = Path(os.path.abspath(source.parent/relative))
+            linked = scientific_path(root,location)
+            content = linked.read_bytes()
+            if entry.sha256(content)==check.get('native_report_sha256'):
+                _save_fixed(root,Path(home)/location.relative_to(root),content)
+        except (OSError,ValueError,entry.ProductionError):
+            continue  # The original report still returns; the missing check remains visible.
+    return _save_fixed(root,Path(home)/source.relative_to(root),raw)
+
+
 def _fix_artifact(root, home, artifact):
     ref = tasks.evidence_ref(root, artifact)
     source = scientific_path(root, ref['path'])
     raw = source.read_bytes()
     if entry.sha256(raw) != ref['sha256']:
         raise ValueError('Artifact changed while freezing its submitted bytes.')
-    fixed = _save_fixed(root, home / 'fixed' / (ref['sha256'] + source.suffix), raw)
+    fixed = freeze_validation_report(root,home/'fixed'/ref['sha256'],source,raw) or _save_fixed(
+        root,home/'fixed'/(ref['sha256']+source.suffix),raw)
     return {**artifact, **fixed, 'version': ref['sha256']}
 
 
@@ -102,8 +132,13 @@ def independent_task_input(root, request, role, core, *, input_ref=None):
         raise ValueError('Select the original independent review request.')
     ref = core.evidence_ref(root, input_ref or request['input_ref'])
     result = {'authors': request['authors'], 'evidence_refs': [ref], 'evidence_index': ref['path']}
+    from scientific_review.rounds import submission_ref
+    with contextlib.closing(core._connect(root, True)) as c:
+        submission = submission_ref(c, request)
+    if submission != request['input_ref']:
+        result['frozen_submission_ref'] = core.evidence_ref(root, submission)
     try:
-        packet = _review_packet(root,request['input_ref'])
+        packet = _review_packet(root,submission)
     except (ValueError,OSError):
         return result
     if isinstance(packet, dict) and (facts := packet.get('facts_ref')):

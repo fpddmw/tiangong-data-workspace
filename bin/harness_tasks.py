@@ -18,8 +18,8 @@ import shlex
 import sqlite3
 import sys
 
-import harness_finite_work as finite
-import harness_store as store
+from task_ledger import finite_work as finite
+from task_ledger import store
 from harness_hosts import supports
 
 VERSION = 3
@@ -186,6 +186,36 @@ def _plan_ref(root, ref):
     return {**verified,'path':str(path)}
 
 
+def _freeze_plan(c, root, task, previous=None, reason=None):
+    from harness_scope import contract, _scope_rows
+    from task_ledger.decisions import resolve
+    decisions = resolve(root, {'task': task['id']}, connection=c, verify_sources=False)['subjects']
+    return {'version': task['plan_revision'], 'plan_ref': json.loads(task['plan_ref_json']),
+            'previous_plan_ref': previous, 'reason_ref': reason,
+            'contract': contract(c, 'task', task['id']), 'scope': _scope_rows(c, task),
+            'decision_refs': [{'id': d['id'], 'source_ref': d['source_ref']}
+                              for subject in decisions if subject['status'] == 'applicable'
+                              for d in subject['decisions']]}
+
+
+def _fresh_request(c, task, request):
+    """Apply explicit baseline changes at first send, preserving original attempts."""
+    if request['kind'] != 'plan' or request['independent'] or request['plan_revision'] == task['plan_revision']:
+        return
+    if c.execute("SELECT 1 FROM work_runs WHERE request_id=? AND (native_identity_json IS NOT NULL OR outcome='unknown')",
+                 (request['id'],)).fetchone():
+        return
+    scope = set(json.loads(request['required_scope_json']))
+    for row in c.execute("""SELECT payload_json FROM work_task_events WHERE task_id=? AND kind='revise'
+            AND plan_revision>? AND json_type(payload_json,'$.baseline')='object' ORDER BY id""",
+                         (task['id'], request['plan_revision'])):
+        update = json.loads(row[0])
+        if (request['id'] in update.get('affected_request_ids', ())
+                or scope.intersection(update['affected_scope'])
+                or update.get('affects_all_unsent')):
+            _fail('request_baseline_changed', 'Recheck this unsent assignment against the current frozen commitment.', request['id'])
+
+
 def check_inputs(root, refs):
     issues = []
     for ref in refs:
@@ -308,6 +338,11 @@ def transaction(root, *, timeout=30):
         c.close()
 
 
+def write_contention(error):
+    return (isinstance(error, sqlite3.OperationalError)
+            and (getattr(error, 'sqlite_errorcode', 0) & 0xff) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED))
+
+
 def install_contract(c, actor, evidence, idempotency_key):
     """Install on a caller-owned transaction, including isolated migration copies."""
     if _exists(c, 'work_contract'):
@@ -322,7 +357,7 @@ def install_contract(c, actor, evidence, idempotency_key):
         c.execute('INSERT INTO work_roles VALUES (?,?,?,?,?,?)',
                   (actor_key(actor), 'global_main', _json(actor), actor_key(actor), _json(evidence), _now()))
     # Extensions add references and observations to this same transaction.
-    for name in ('harness_knowledge', 'harness_feedback', 'harness_business', 'harness_scope'):
+    for name in ('harness_knowledge', 'harness_feedback', 'task_ledger.business', 'harness_scope'):
         try:
             extension = importlib.import_module(name)
         except ModuleNotFoundError as exc:
@@ -396,7 +431,7 @@ def _admit_request(c, task, req, *, side_effect=False):
     leaves that repair available; cancellation and native-run guards still apply.
     This changes neither task state nor scientific adoption.
     """
-    import harness_maintenance
+    from task_ledger import maintenance as harness_maintenance
     if side_effect and _delegation_decisions(c, task['id']).get(req['id'], {}).get('action') == 'end':
         _fail('delegation_ended', 'This assignment was ended. Its owner can explicitly continue the original Session with --instructions and --resume-stopped after reading the original effects.', req['id'])
     parent = harness_maintenance.parent_finding(c, req)
@@ -408,8 +443,13 @@ def _admit_request(c, task, req, *, side_effect=False):
         harness_feedback.admit_maintenance(c, parent['id'] if parent is not None else req['id'])
         return 'shared_maintenance'
     _admit_scope(c, task)
+    if side_effect:
+        _fresh_request(c, task, req)
+        if req['kind']=='plan' and not req['independent']:
+            from harness_wave import guard_reserve
+            guard_reserve(c,workspace_root(c),task,req)
     if side_effect and req['independent']:
-        from review_queue import guard
+        from scientific_review.queue import guard
         guard(c,workspace_root(c),_decode(req))
     if side_effect and req['kind'] == 'plan' and not req['independent']:
         finite_configs = finite.request_configs(c, task['id'])
@@ -509,9 +549,39 @@ def _native_receipt(root, ref, run, native=None):
     return ref, doc, identity
 
 
-def _run_event(c, run, kind, actor, receipt, payload):
+def _run_event(c, run, kind, actor, receipt, payload, *, observed_at=None):
     c.execute('INSERT INTO work_run_events(run_id,kind,actor_json,receipt_json,payload_json,created_at) VALUES (?,?,?,?,?,?)',
-              (run['id'], kind, _json(actor), _json(receipt) if receipt else None, _json(payload), _now()))
+              (run['id'], kind, _json(actor), _json(receipt) if receipt else None, _json(payload), observed_at or _now()))
+
+
+def _record_capacity(c, root, actor, payload, *, observed_at=None):
+    from dsh_capacity import POOL_NAMES, _paths
+
+    ident = _text(payload.get('id'), 'Original capacity run')
+    run = _row(c, 'work_runs', ident)
+    if (run['target_host'] not in POOL_NAMES
+            or payload.get('queue_source') != str(_paths(root, run['target_host'])[0])):
+        raise ValueError('Capacity observation must come from the original run host queue')
+    phase = payload.get('phase')
+    if phase not in ('queued','admitted','released','abandoned','cancelled_before_start',
+                     'waiting_review','waiting_retry','transport_handoff'):
+        raise ValueError('Unknown technical capacity observation')
+    if payload.get('kind') not in ('author','review') or not isinstance(payload.get('sequence'), int):
+        raise ValueError('Capacity observation must retain its class and FIFO sequence')
+    event = {k:payload[k] for k in ('phase','kind','sequence','queue_source')}
+    result = {'run_id':ident,'capacity_phase':phase,'business_outcome_unchanged':True}
+    if payload.get('reason') in ('review_wait_execution_exited','model_retry_execution_exited') and phase=='abandoned':
+        event['reason'] = payload['reason']
+        if payload.get('authority_ref'):
+            event['authority_ref'] = evidence_ref(root,payload['authority_ref'])
+        if c.execute('''SELECT 1 FROM work_run_events WHERE run_id=? AND kind='capacity'
+                AND json_extract(payload_json, '$.sequence')=? AND json_extract(payload_json, '$.reason')=?''',
+                (ident,event['sequence'],event['reason'])).fetchone():
+            return result
+    if not observed_at or not c.execute('''SELECT 1 FROM work_run_events WHERE run_id=? AND kind='capacity'
+            AND created_at=? AND payload_json=?''',(ident,observed_at,_json(event))).fetchone():
+        _run_event(c,run,'capacity',actor,None,event,observed_at=observed_at)
+    return result
 
 
 def recovery_admission(root, run_id, actor):
@@ -548,13 +618,20 @@ def _artifact_refs(root, refs, nonempty=False):
     return result
 
 
-def _effective_dispositions(c, task_id, *, return_id=None, before=None):
+def _effective_dispositions(c, task_id, *, return_id=None, before=None, request_ids=None, scope_ids=()):
     if return_id is not None:
         rows = c.execute('SELECT * FROM work_dispositions WHERE return_id=? ORDER BY created_at,id',
                          (return_id,)).fetchall()
     else:
+        filter_sql, args = '', (task_id,)
+        if request_ids is not None:
+            filter_sql = '''AND (r.request_id IN (SELECT value FROM json_each(?)) OR EXISTS (
+                SELECT 1 FROM work_dispositions candidate JOIN json_each(candidate.scope_json) s
+                WHERE candidate.return_id=r.id AND s.value IN (SELECT value FROM json_each(?))))'''
+            args += (_json(list(request_ids)), _json(list(scope_ids)))
         rows = c.execute('''SELECT d.* FROM work_dispositions d JOIN work_returns r ON r.id=d.return_id
-                         JOIN work_requests q ON q.id=r.request_id WHERE q.task_id=? ORDER BY d.created_at,d.id''', (task_id,)).fetchall()
+                         JOIN work_requests q ON q.id=r.request_id WHERE q.task_id=? '''
+                         + filter_sql + ' ORDER BY d.created_at,d.id', args).fetchall()
     if before is not None:
         rows = [row for row in rows if row['created_at'] <= before]
     superseded = {ident for row in rows for ident in json.loads(row['supersedes_json'])}
@@ -580,7 +657,7 @@ def delegation(c, task, request, **_unused):
             'control': control}
 
 
-def apply(c, root, action, actor, payload):
+def apply(c, root, action, actor, payload, *, prepared=None):
     """Apply one authorized coordination fact inside an existing transaction.
 
     Extensions may use this within transaction() so observations and their
@@ -596,13 +673,13 @@ def apply(c, root, action, actor, payload):
         # This must precede both generic action-ID paths: pending observations
         # do not consume successful completion, including after reopen.
         from harness_scope import complete
-        return complete(c,root,actor,payload)
+        return complete(c,root,actor,payload,prepared)
     if action in ('business-bind', 'business-observe'):
-        import harness_business
+        from task_ledger import business as harness_business
         return harness_business.apply(c, root, action, actor, payload)
     ident = _text(payload.get('id'), 'Stable action id')
     if action == 'run-review-delivered':
-        from review_delivery import record
+        from scientific_review.delivery import record
         return record(c,root,actor,payload)
     if action == 'run-delivery-evidence':
         from delivery_evidence import CLI_SCHEMA, operation
@@ -619,26 +696,7 @@ def apply(c, root, action, actor, payload):
             _run_event(c,run,'delivery-evidence',actor,None,{'record_ref':ref})
         return {'run_id':ident,'record_ref':ref,'business_outcome_unchanged':True}
     if action == 'run-capacity':
-        run = _row(c, 'work_runs', ident)
-        if run['target_host'] != 'deepseek_harness':
-            raise ValueError('Capacity observations apply only to this workspace DSH runs')
-        phase = payload.get('phase')
-        if phase not in ('queued', 'admitted', 'released', 'abandoned', 'cancelled_before_start','waiting_review','transport_handoff'):
-            raise ValueError('Unknown technical capacity observation')
-        if payload.get('kind') not in ('author', 'review') or not isinstance(payload.get('sequence'), int):
-            raise ValueError('Capacity observation must retain its class and FIFO sequence')
-        event = {k: payload[k] for k in ('phase', 'kind', 'sequence', 'queue_source')}
-        if payload.get('reason') == 'review_wait_execution_exited' and phase == 'abandoned':
-            event['reason'] = payload['reason']
-            if payload.get('authority_ref'):
-                event['authority_ref'] = evidence_ref(root, payload['authority_ref'])
-            prior = c.execute('''SELECT 1 FROM work_run_events WHERE run_id=? AND kind='capacity'
-                AND json_extract(payload_json, '$.sequence')=? AND json_extract(payload_json, '$.reason')=?''',
-                (ident, event['sequence'], event['reason'])).fetchone()
-            if prior:
-                return {'run_id': ident, 'capacity_phase': phase, 'business_outcome_unchanged': True}
-        _run_event(c, run, 'capacity', actor, None, event)
-        return {'run_id': ident, 'capacity_phase': phase, 'business_outcome_unchanged': True}
+        return _record_capacity(c,root,actor,payload)
     if action == 'run-friction':
         run = _row(c, 'work_runs', payload.get('run_id'))
         ref = evidence_ref(root, payload.get('receipt'))
@@ -665,7 +723,7 @@ def apply(c, root, action, actor, payload):
             if existing['task_id'] != task['id'] or existing['parent_request_id'] != req['id']:
                 _fail('idempotency_conflict', 'Runtime finding identity belongs to another original request', ident)
             if tool_failure:
-                import harness_maintenance
+                from task_ledger import maintenance as harness_maintenance
                 harness_maintenance.runtime_observation(c, root, task, actor, existing, ref, failures)
             return _decode(existing)
         fields = {'task_id': task['id'], 'kind': 'finding', 'sender_actor': actor_key(actor),
@@ -691,7 +749,7 @@ def apply(c, root, action, actor, payload):
     if action == 'create':
         owner = _actor(root, payload.get('owner_actor'), observed=True)
         fields = {'original_ref_json': _json(evidence_ref(root, payload.get('original_ref'))),
-                  'plan_ref_json': _json(_plan_ref(root, payload.get('plan_ref'))),
+                  'plan_ref_json': _json(prepared['plan'] if prepared else _plan_ref(root, payload.get('plan_ref'))),
                   'owner_actor': actor_key(owner), 'sponsor_actor': actor_key(actor),
                   'summary': _text(payload.get('summary'), 'Task purpose'),
                   'required_scope_json': _json(_list(payload.get('required_scope', []), 'Declared task scope')),
@@ -700,28 +758,36 @@ def apply(c, root, action, actor, payload):
         if row is not None:
             # Retries compare the immutable creation event, rather than a later plan.
             event = c.execute("SELECT payload_json FROM work_task_events WHERE task_id=? AND kind='create' ORDER BY id LIMIT 1", (ident,)).fetchone()
-            if event is None or event[0] != _json(fields):
+            prior = json.loads(event[0]) if event is not None else None
+            if prior is None or any(prior.get(key) != value for key, value in fields.items()):
                 _fail('idempotency_conflict', 'Task identity already belongs to a different original complete task', ident)
             return _decode(row)
         stamp = _now()
         c.execute('INSERT INTO work_tasks(id,' + ','.join(fields) + ',created_at,updated_at) VALUES (' + ','.join('?' for _ in range(len(fields) + 3)) + ')',
                   (ident, *fields.values(), stamp, stamp))
         task = _row(c, 'work_tasks', ident)
-        _event(c, task, 'create', actor, fields)
         if payload.get('delivery_contract') is not None:
             from harness_scope import set_contract
             set_contract(c,root,'task',ident,payload['delivery_contract'],payload['original_ref'],actor)
             task=_row(c,'work_tasks',ident)
+        _event(c, task, 'create', actor, {**fields, 'baseline': _freeze_plan(c, root, task)})
         return _decode(task)
     if action in ('revise', 'reopen', 'pause', 'resume', 'cancel', 'transfer'):
         task = _row(c, 'work_tasks', payload.get('task_id', ident))
-        for event in c.execute('SELECT * FROM work_task_events WHERE task_id=? ORDER BY id', (task['id'],)):
+        for event in c.execute("""SELECT * FROM work_task_events WHERE task_id=? AND kind=?
+                AND json_extract(payload_json,'$.id')=? ORDER BY id LIMIT 1""", (task['id'], action, ident)):
             saved = json.loads(event['payload_json'])
             if saved.get('id') != ident:
                 continue
             if 'action_payload' not in saved:
                 _fail('historical_action_receipt_missing', 'This historical action predates retry receipts; inspect its original event instead of applying it again', ident)
-            if event['kind'] != action or saved['action_payload'] != payload:
+            def comparable(value):
+                if action!='revise' or value.get('base_sha256') is None:
+                    return value
+                return {**value,'evidence_ref':value['evidence_ref']['sha256'],'plan_ref':value['plan_ref']['sha256'],
+                        'affected_scope':sorted(value.get('affected_scope',[])),
+                        'affected_request_ids':sorted(value.get('affected_request_ids',[]))}
+            if native_key(event['actor_json']) != native_key(actor) or comparable(saved['action_payload']) != comparable(payload):
                 _fail('idempotency_conflict', 'The original action id must retain its actor and complete payload, including expected revision', ident)
             return saved['result']
         human_recovery = None
@@ -731,8 +797,16 @@ def apply(c, root, action, actor, payload):
             human_recovery = evidence_ref(root, payload['human_authorization_ref'])
         elif action == 'transfer' and payload.get('human_authorization_ref'):
             human_recovery = evidence_ref(root, payload['human_authorization_ref'])
-        _revision(task, payload)
-        evidence = evidence_ref(root, payload.get('evidence_ref'))
+        explicit_baseline = action == 'revise' and payload.get('base_sha256') is not None
+        previous_plan = json.loads(task['plan_ref_json'])
+        if explicit_baseline:
+            if native_key(actor) not in (native_key(task['owner_actor']), native_key(task['sponsor_actor'])) and not human_recovery:
+                _fail('plan_authority_required', 'The current owner, original sponsor or explicitly delegated maintainer must adopt the baseline.', task['id'])
+            if previous_plan['sha256'] != payload['base_sha256']:
+                _fail('plan_baseline_conflict', 'Read the current frozen commitment and compare the proposed change before retrying.', task['id'])
+        else:
+            _revision(task, payload)
+        evidence = prepared['reason'] if explicit_baseline and prepared else evidence_ref(root, payload.get('evidence_ref'))
         summary = _text(payload.get('summary'), 'Decision and reason')
         if action in ('revise', 'reopen'):
             if action == 'reopen' and task['state'] != 'completed':
@@ -743,16 +817,22 @@ def apply(c, root, action, actor, payload):
             new_scope = _list(payload.get('required_scope', old_scope), 'Declared task scope')
             affected = payload.get('affected_scope', [])
             targets = payload.get('affected_request_ids')
-            plan = _plan_ref(root, payload.get('plan_ref', json.loads(task['plan_ref_json']) if action == 'reopen' else None))
+            plan = prepared['plan'] if prepared and 'plan' in prepared else _plan_ref(root, payload.get('plan_ref', previous_plan if action == 'reopen' else None))
             if action == 'revise' and plan['sha256'] == json.loads(task['plan_ref_json'])['sha256']:
                 raise ValueError('A plan revision must bind genuinely changed original bytes')
             previous_state = task['state']
             task = _touch(c, task, plan_ref_json=_json(plan), plan_revision=task['plan_revision'] + 1,
                           required_scope_json=_json(new_scope), state='active' if action == 'reopen' else task['state'])
+            if explicit_baseline and payload.get('delivery_contract') is not None:
+                from harness_scope import set_contract
+                set_contract(c, root, 'task', task['id'], payload['delivery_contract'], evidence, actor)
+                task = _row(c, 'work_tasks', task['id'])
             _event(c, task, action, actor, {'id': ident, 'evidence_ref': evidence, 'summary': summary,
                                           'affected_scope': affected, 'plan_ref': plan,
                                           'previous_required_scope': old_scope, 'required_scope': new_scope,
                                           'previous_state': previous_state,
+                                          'baseline': _freeze_plan(c, root, task, previous_plan, evidence),
+                                          'affects_all_unsent': explicit_baseline and not (affected or targets),
                                           **({'human_authorization_ref': human_recovery} if human_recovery else {}),
                                           **({'affected_request_ids': targets} if targets is not None else {})})
         elif action == 'transfer':
@@ -820,6 +900,10 @@ def apply(c, root, action, actor, payload):
             _independent(fields | {'id': ident}, task, recipient)
         existing = c.execute('SELECT * FROM work_requests WHERE id=?', (ident,)).fetchone()
         is_author = finite.programmatic_request(c, fields)
+        if independent and not existing:
+            from scientific_review.rounds import reserve
+            _admit_scope(c, task)
+            reserve(c,root,task,actor,parent_request,ident,prepared)
         if existing and fields['recipient_actor'] is None and existing['recipient_actor'] is not None:
             claimed = any(json.loads(e[0]).get('request_id') == ident for e in c.execute(
                 "SELECT payload_json FROM work_task_events WHERE task_id=? AND kind IN ('maintenance-claim','native-bind')", (task['id'],)))
@@ -828,6 +912,26 @@ def apply(c, root, action, actor, payload):
         result = _decode(_immutable(c, 'work_requests', ident, fields))
         if is_author and not existing:
             work_config = {}
+            if previous := payload.get('continues_request_id'):
+                from harness_scope import _owner, effective_contract, request_progress
+                _owner(c,task,actor)
+                original = _row(c,'work_requests',previous)
+                if (original['task_id']!=task['id'] or original['independent'] or original['kind']!='plan'
+                        or set(json.loads(original['required_scope_json']))!=set(scope)
+                        or finite.successor(finite.request_configs(c,task['id']),previous)):
+                    raise ValueError('Continue the same exact delivery unit only once, preserving its task and original scope')
+                if pending_runs(c,previous) or _delegation_decisions(c,task['id']).get(previous,{}).get('action')=='end':
+                    from harness_package import ended_devin_writer
+                    if not ended_devin_writer(c,root,previous):
+                        _fail('package_recovery_required','Resolve the original execution, effects and stop first.',previous)
+                original=_decode(original)
+                if request_progress(c,original)['delivered']:
+                    _fail('original_delivered','The original unit is delivered. Reopen its exact correction or assign a new independent use.',previous)
+                original_use=effective_contract(c,original)['body']
+                changes=payload.get('delivery_contract') or {}
+                if any(key in changes and changes[key]!=original_use.get(key) for key in ('purpose','endpoint')):
+                    _fail('continuation_changes_use','A different purpose or endpoint needs a new original request and Session.',previous)
+                work_config['continues_request_id']=previous
             if payload.get('package_input_refs'):
                 work_config['package_input_refs'] = _refs(root, payload['package_input_refs'], 'Original package inputs', True)
             _event(c, task, 'finite-request', actor, {'request_id': ident, 'limits': work_config})
@@ -885,8 +989,11 @@ def apply(c, root, action, actor, payload):
             result = _decode(retained)
         else:
             result = _decode(_immutable(c, 'work_returns', ident, fields))
+        if req['independent'] and prepared:
+            from scientific_review.rounds import record_opinion
+            record_opinion(c,root,task,req,result,prepared)
         if req['kind'] == 'finding' and req['recipient_role'] == 'executor':
-            import harness_maintenance
+            from task_ledger import maintenance as harness_maintenance
             parent = harness_maintenance.parent_finding(c, req, current_owner=False)
             if parent is not None:
                 result.update(maintenance_finding_id=parent['id'],
@@ -897,11 +1004,13 @@ def apply(c, root, action, actor, payload):
         ret = _row(c, 'work_returns', payload.get('return_id'))
         req = _row(c, 'work_requests', ret['request_id'])
         task = _row(c, 'work_tasks', req['task_id'])
-        evidence = evidence_ref(root, payload.get('evidence_ref'))
+        evidence = prepared['note'] if prepared else evidence_ref(root, payload.get('evidence_ref'))
         fields = {'return_id':ret['id'], 'actor_json':_json(actor),
                   'evidence_ref_json':_json(evidence), 'summary':_text(payload.get('summary'), 'Owner judgment')}
         if action == 'consume':
             return _decode(_immutable(c, 'work_consumptions', ident, fields))
+        from harness_scope import _owner
+        _owner(c,task,actor)
         disposition = payload.get('disposition')
         if disposition not in ('adopt','revise','hold','reject'):
             raise ValueError('Choose the owner action: adopt, revise, hold or reject.')
@@ -913,31 +1022,23 @@ def apply(c, root, action, actor, payload):
         applications=[]
         if applied:
             if disposition!='adopt':raise ValueError('Scientific applicability requires the task lead\'s explicit adopt judgment')
-            import harness_scope
-            effective=next(r for r in harness_scope._returns(c,task['id']) if r['id']==ret['id'])
-            applications=harness_scope.review_applications(c,root,task,_decode(req),effective,actor,applied,
-                payload.get('handling_refs',[]))
+            if prepared is None:
+                raise ValueError('Prepare scoped review evidence through the original disposition entry point.')
+            applications=prepared['applications']
             ident='review-application:'+hashlib.sha256(_json([ident,applications]).encode()).hexdigest()
         elif payload.get('handling_refs'):raise ValueError('Use --apply-review to identify the exact original opinion for this handling')
         check_report=check_ref=None
         if acceptance=='final':
             import harness_scope
+            if prepared is None:
+                raise ValueError('Prepare final evidence through the original disposition entry point.')
+            check_report,check_ref=prepared['report'],prepared['check_ref']
+            ident='final-adoption:'+hashlib.sha256(_json([ident,prepared['choice']]).encode()).hexdigest()
+        if prepared:
+            import harness_scope
             harness_scope._owner(c,task,actor)
-            effective=next(r for r in harness_scope._returns(c,task['id']) if r['id']==ret['id'])
-            if not scope or not set(scope).issubset(effective['coverage']):
-                _fail('coverage_required','Final adoption must identify explicitly covered scope on this exact report.',ret['id'])
-            check_report,check_ref=harness_scope.checked_report(c,root,'request',req['id'],'handoff',
-                supplied=payload.get('checks_path'),return_id=ret['id'],scope_ids=scope,proposed=applications)
-            if not check_report['ready']:
-                _fail('delivery_not_ready','Final adoption pending; read '+check_ref['path'],ret['id'])
-            fresh=harness_scope.build_check(c,root,'request',req['id'],'handoff',return_id=ret['id'],scope_ids=scope,proposed=applications)
-            if fresh['input_fingerprint']!=check_report['input_fingerprint']:
-                _fail('check_input_changed','Evidence changed during final adoption; no stale check applied.',ret['id'])
-            checked=check_report.get('scope_endpoints',{}).get(ret['id'],{})
-            members=harness_scope.handoff_summary(check_report,check_ref)['members']
-            choice=[{sid:checked.get(sid,{}).get('checked_endpoint') for sid in scope},
-                    [member['candidate_ref'] for member in members]]
-            ident='final-adoption:'+hashlib.sha256(_json([ident,choice]).encode()).hexdigest()
+            if not c.execute('SELECT 1 FROM work_dispositions WHERE id=?',(ident,)).fetchone():
+                harness_scope.verify_disposition(c,task,_decode(req),ret['id'],scope,prepared)
         supersedes = _list(payload.get('supersedes', []), 'Superseded decisions')
         for previous in supersedes:
             if _row(c, 'work_dispositions', previous)['return_id'] != ret['id']:
@@ -957,20 +1058,24 @@ def apply(c, root, action, actor, payload):
         _immutable(c, 'work_consumptions', 'disposition:' + ident,
             {'return_id':ret['id'], 'actor_json':_json(actor), 'evidence_ref_json':_json(evidence), 'summary':fields['summary']})
         import harness_scope
-        events=harness_scope._events(c,task['id'],'delivery-acceptance-recorded')
-        if not any(e['payload']['disposition_id']==ident for e in events):
-            own,parent=harness_scope._contract_for_request(c,_decode(req))
-            endpoint=harness_scope.endpoint(own or parent)
+        if not harness_scope._evidence_events(c,task['id'],'delivery-acceptance-recorded','disposition_id',[ident]):
+            endpoint=harness_scope.endpoint(harness_scope.effective_contract(c,_decode(req)))
             checked=(check_report or {}).get('scope_endpoints',{}).get(ret['id'],{})
             endpoint_by_scope={sid:checked.get(sid,{}).get('checked_endpoint',endpoint) for sid in scope}
             metadata={'disposition_id':ident,'acceptance':acceptance,'check_ref':check_ref,
+                **({'adopted_scope_ids':scope,'original_author_coverage':_decode(ret)['coverage'],
+                    'candidate_refs':prepared['choice'][1],'candidate_subjects':prepared['candidate_subjects']} if acceptance=='final' else {}),
                 **({'review_applications':applications} if applications else {}),
                 'request_endpoint':endpoint,
                 'endpoint_by_scope':endpoint_by_scope,
                 'submitted_scope_ids':[sid for sid in scope if check_report and
                                       endpoint_by_scope[sid] in ('submitted','published')]}
             _event(c,task,'delivery-acceptance-recorded',actor,metadata)
-        return _decode(result)
+        decoded=_decode(result)
+        if bookmark:=payload.get('wave_bookmark'):
+            from harness_wave import record_wave_review
+            record_wave_review(c,task,actor,bookmark,decoded)
+        return decoded
     if action == 'run-intent':
         req = _row(c, 'work_requests', payload.get('request_id'))
         task = _row(c, 'work_tasks', req['task_id'])
@@ -1003,7 +1108,22 @@ def apply(c, root, action, actor, payload):
             if any(row[key] != value for key, value in fields.items() if key != 'dispatcher_actor') or json.loads(row['input_refs_json']) != expected:
                 _fail('idempotency_conflict', 'An existing native intent is immutable; recover it rather than launch again', ident)
             return _run_view(c, row) | {'may_launch': False}
-        import harness_maintenance
+        previous_run_id = payload.get('previous_run_id')
+        ordinary=payload.get('ordinary_continuation')
+        if ordinary:
+            from harness_scope import continuation
+            if fields['operation']!='resume':
+                raise ValueError('An owner continuation must retain the original native attempt')
+            if isinstance(continuation(c,root,_decode(req),ordinary.get('basis')),dict) and not ordinary.get('basis'):
+                _fail('original_delivered','The original unit reached its endpoint before continuation.',req['id'])
+        if fields['operation'] == 'resume' and previous_run_id:
+            previous_run = _row(c, 'work_runs', previous_run_id)
+            if previous_run['request_id'] == req['id']:
+                latest = c.execute('SELECT id FROM work_runs WHERE request_id=? ORDER BY created_at DESC,id DESC LIMIT 1',
+                                   (req['id'],)).fetchone()
+                if latest['id'] != previous_run_id:
+                    _fail('run_recovery_required', 'An original successor already owns this Session turn', latest['id'])
+        from task_ledger import maintenance as harness_maintenance
         parent = harness_maintenance.parent_finding(c, req)
         if parent is not None:
             for sibling in c.execute('SELECT id FROM work_requests WHERE parent_request_id=? AND id!=?',
@@ -1017,10 +1137,12 @@ def apply(c, root, action, actor, payload):
                 session_origin(c, previous)  # Native ownership is acquired by the selected host, never replaced.
             else:
                 _fail('run_recovery_required', 'Original intent/run is in-flight or unknown; reconcile ' + previous['id'] + ' before any new launch', ident)
+        replacement=None
         if req['id'] in finite.request_configs(c, task['id']):
             from harness_package import admit_author_run
-            admit_author_run(c, req, fields['operation'], payload.get('previous_run_id'))
-        previous_run_id = payload.get('previous_run_id')
+            replacement=admit_author_run(c,req,fields['operation'],payload.get('previous_run_id'))
+        if payload.get('writer_replacement') and payload['writer_replacement']!=replacement:
+            _fail('writer_handoff_changed','Recheck the original writer and exact retained effects before starting a successor.',ident)
         fields['input_refs_json'] = _json(inputs)
         stamp = _now()
         c.execute('INSERT INTO work_runs(id,' + ','.join(fields) + ',outcome,native_identity_json,stop_requested,created_at,updated_at) VALUES (' + ','.join('?' for _ in range(len(fields) + 6)) + ')',
@@ -1028,7 +1150,16 @@ def apply(c, root, action, actor, payload):
         row = _row(c, 'work_runs', ident)
         _run_event(c, row, 'intent', actor, None, {'request_id': req['id'],
             **({'dsh_auto_continue_from':auto_from} if auto_from else {}),
+            **({'ordinary_continuation':ordinary} if ordinary else {}),
+            **({'writer_replacement':replacement} if replacement else {}),
             **({'previous_run_id': previous_run_id} if previous_run_id else {}),})
+        if host == 'deepseek_harness' and (watch := payload.get('dsh_recovery_watch')):
+            from dsh_auto_resume import WATCH
+            from dsh_capacity import recovery_managed
+            if (watch.get('manager', {}).get('pid') != os.getpid()
+                    or not recovery_managed(root, watch.get('provider'))):
+                _fail('auto_resume_no_authority', 'Observe the actual configured native execution manager', ident)
+            _run_event(c, row, WATCH, actor, None, watch)
         return _decode(row) | {'may_launch': True,}
     if action in ('run-bind', 'run-outcome', 'run-stop'):
         run = _row(c, 'work_runs', ident)
@@ -1142,38 +1273,59 @@ def apply(c, root, action, actor, payload):
 
 
 def mutate(root, action, actor, payload):
-    with transaction(root) as c:
-        result = apply(c, root, action, actor, payload)
-        if action in ('create', 'revise', 'reopen', 'request', 'return', 'run-outcome') and not (
-                action == 'revise' and 'request_id' in payload):
-            # Original semantic metadata is indexed when it is actually used;
-            # missing/invalid optional metadata never discards a real delivery.
-            try:
-                knowledge = importlib.import_module('harness_knowledge')
-            except ModuleNotFoundError as exc:
-                if exc.name != 'harness_knowledge':
-                    raise
-            else:
-                task_id = (result['id'] if action in ('create', 'revise', 'reopen') else result['task_id']
-                           if action == 'request' else _row(c, 'work_requests', result['request_id'])['task_id'])
-                originals = ([result['original_ref'], result['plan_ref']] if action == 'create'
-                             else [result['plan_ref']] if action in ('revise', 'reopen')
-                             else [result['input_ref']] if action == 'request'
-                             else ([payload['receipt']] if payload.get('receipt') else []) if action == 'run-outcome'
-                             else [result['result_ref'], *result['artifact_refs']])
-                warnings = []
-                for original in originals:
-                    c.execute('SAVEPOINT optional_knowledge_index')
-                    try:
-                        warnings.extend(knowledge.index_original(c, root, task_id, original, actor))
-                    except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
-                        c.execute('ROLLBACK TO optional_knowledge_index')
-                        warnings.append({'source_ref': original, 'reason': str(exc)})
-                    finally:
-                        c.execute('RELEASE optional_knowledge_index')
-                if warnings:
-                    result['knowledge_warnings'] = warnings
-        return result
+    prepared = None
+    if action in ('create', 'revise') and payload.get('plan_ref'):
+        prepared = {'plan': _plan_ref(root, payload['plan_ref'])}
+        if action == 'revise' and payload.get('base_sha256') is not None:
+            prepared['reason'] = _plan_ref(root, payload['evidence_ref'])
+    if action == 'request' and payload.get('independent'):
+        from scientific_review.rounds import prepare
+        prepared = prepare(root, payload)
+    if action == 'return' and payload.get('request_id'):
+        from scientific_review.rounds import prepare_opinion
+        prepared = prepare_opinion(root, payload)
+    if action == 'complete' or action == 'dispose' and (payload.get('acceptance') == 'final' or payload.get('apply_review_return_ids')):
+        from harness_scope import prepare_decision
+        prepared = prepare_decision(root,action,verified_actor(root,actor),payload)
+    try:
+        with transaction(root) as c:
+            result = apply(c, root, action, actor, payload, prepared=prepared)
+            if action in ('create', 'revise', 'reopen', 'request', 'return', 'run-outcome') and not (
+                    action == 'revise' and 'request_id' in payload):
+                # Original semantic metadata is indexed when it is actually used;
+                # missing/invalid optional metadata never discards a real delivery.
+                try:
+                    knowledge = importlib.import_module('harness_knowledge')
+                except ModuleNotFoundError as exc:
+                    if exc.name != 'harness_knowledge':
+                        raise
+                else:
+                    task_id = (result['id'] if action in ('create', 'revise', 'reopen') else result['task_id']
+                               if action == 'request' else _row(c, 'work_requests', result['request_id'])['task_id'])
+                    originals = ([result['original_ref'], result['plan_ref']] if action == 'create'
+                                 else [result['plan_ref']] if action in ('revise', 'reopen')
+                                 else [result['input_ref']] if action == 'request'
+                                 else ([payload['receipt']] if payload.get('receipt') else []) if action == 'run-outcome'
+                                 else [result['result_ref'], *result['artifact_refs']])
+                    warnings = []
+                    for original in originals:
+                        c.execute('SAVEPOINT optional_knowledge_index')
+                        try:
+                            warnings.extend(knowledge.index_original(c, root, task_id, original, actor))
+                        except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
+                            c.execute('ROLLBACK TO optional_knowledge_index')
+                            warnings.append({'source_ref': original, 'reason': str(exc)})
+                        finally:
+                            c.execute('RELEASE optional_knowledge_index')
+                    if warnings:
+                        result['knowledge_warnings'] = warnings
+            return result
+    except WorkConflict as error:
+        if action == 'request' and error.code == 'review_round_budget':
+            from scientific_review.rounds import record_held
+            record_held(root, actor, payload, error.review_units.values())
+            error.review_request = payload['id']
+        raise
 
 
 def admission(root, task_id, actor, *, request_id=None, expected_plan_revision=None, side_effect=False):
@@ -1223,7 +1375,16 @@ def dispatch_admission(root, task_id, actor, *, request_id, run_id, expected_pla
         if run['stop_requested'] or run['outcome'] not in ('intent', 'running'):
             _fail('dispatch_run_not_admitted', 'Original run is stopped, terminal or uncertain; reconcile its actual effects instead of restarting', run_id)
         intent = c.execute('SELECT payload_json FROM work_run_events WHERE run_id=? AND kind=\'intent\' ORDER BY id LIMIT 1',(run_id,)).fetchone()
-        if intent and (previous := json.loads(intent[0]).get('dsh_auto_continue_from')):
+        control=json.loads(intent[0]) if intent else {}
+        if replacement:=control.get('writer_replacement'):
+            from harness_package import missing_devin_writer
+            if missing_devin_writer(c,root,req,replacement['request_id'])!=replacement:
+                _fail('writer_handoff_changed','The ended writer, Session or retained effects changed before native start.',run_id)
+        if ordinary:=control.get('ordinary_continuation'):
+            from harness_scope import continuation
+            if continuation(c,root,_decode(req),ordinary.get('basis')) and not ordinary.get('basis'):
+                _fail('original_delivered','The original unit reached its endpoint before native continuation.',req['id'])
+        if previous := control.get('dsh_auto_continue_from'):
             from dsh_auto_resume import guard
             guard(c,root,previous,run_id)
         yield {'admission_scope': admission_scope, 'task_id': task_id, 'request_id': request_id, 'run_id': run_id,
@@ -1236,7 +1397,7 @@ def _unresolved_requests(c, task):
     ended = _delegation_decisions(c, task['id'])
     successors = finite.request_configs(c, task['id'])
     superseded = {row[0] for row in c.execute('SELECT supersedes_request_id FROM work_requests WHERE task_id=? AND supersedes_request_id IS NOT NULL', (task['id'],))}
-    from review_queue import EVENT, WITHHELD
+    from scientific_review.queue import EVENT, WITHHELD
     superseded.update(row[0] for row in c.execute("SELECT json_extract(payload_json,'$.superseded_review_id') "
         'FROM work_task_events WHERE task_id=? AND kind=?',(task['id'],EVENT)))
     held={row[0] for row in c.execute("SELECT json_extract(payload_json,'$.review_id') FROM work_task_events "
@@ -1271,7 +1432,7 @@ def _snapshot(c, task):
         value['decisions'] = [_decode(d) for d in c.execute('SELECT * FROM work_dispositions WHERE return_id=? ORDER BY created_at,id', (row['id'],))]
         returns.append(value)
     runs = [_run_view(c, row) for row in c.execute('SELECT r.* FROM work_runs r JOIN work_requests q ON q.id=r.request_id WHERE q.task_id=? ORDER BY r.created_at,r.id', (task['id'],))]
-    import harness_business
+    from task_ledger import business as harness_business
     root = workspace_root(c)
     return {'task': task_view, 'requests': requests, 'returns': returns, 'runs': runs,
             'dispositions': [_decode(row) for row in _effective_dispositions(c, task['id'])],
@@ -1390,12 +1551,18 @@ def pending_decision(returned):
 
 def task_entry(root, task_id):
     """Return original records without deriving the reader's next action."""
-    import harness_entry
-    return harness_entry.current(root, task_id=task_id)['work']
+    import harness_snapshot
+    return harness_snapshot.read(root, task_id=task_id)['work']
+
+
+def save_note(root, home, label, text):
+    from production_review import _save_fixed
+    raw = _text(text, 'Original decision').encode('utf-8')
+    return _save_fixed(root, Path(home)/(label+'-'+hashlib.sha256(raw).hexdigest()+'.md'),raw)
 
 
 def _saved_document(root, path, *, home=None, label='judgment', allow_text=False):
-    import business_board
+    from platform_review import observation as business_board
     root = Path(root).resolve()
     if path == '-':
         if home is None:
@@ -1444,7 +1611,7 @@ def _saved_document(root, path, *, home=None, label='judgment', allow_text=False
 
 
 def _contribution_artifact(root, artifact):
-    import business_board
+    from platform_review import observation as business_board
     if isinstance(artifact, str):
         artifact = {'path': artifact}
     if not isinstance(artifact, dict) or not artifact.get('path'):
@@ -1517,24 +1684,26 @@ def resume_delegation(root, actor, request_id, instruction_ref):
                 'reason': reason, 'previous_decision_id': previous['decision_id']})
 
 
-def dispose_result(root, actor, return_id, path, *, disposition='hold',scope_ids=(),acceptance='stage',checks_path=None,apply_review_ids=(),handling_paths=()):
+def dispose_result(root, actor, return_id, path, *, disposition='hold',scope_ids=(),acceptance='stage',checks_path=None,apply_review_ids=(),handling_paths=(),wave=None):
     returned = _read_one(root, 'work_returns', return_id)
     request = read_request(root, returned['request_id'])
     ref, _ = _saved_document(root, path, home=Path(request['input_ref']['path']).parent,
                              label='decision', allow_text=True)
     reason = Path(ref['path']).read_text(encoding='utf-8')
-    from harness_sessions import reference
+    from task_ledger.sessions import reference
     handling=[reference(root,p) for p in handling_paths]
     ident = 'decision:' + hashlib.sha256(_json([return_id, native_key(actor), ref, disposition,list(scope_ids),acceptance,
         *([list(apply_review_ids),handling] if apply_review_ids or handling else [])]).encode()).hexdigest()
     return mutate(root, 'dispose', actor, {'id':ident, 'return_id':return_id,
         'disposition':disposition, 'summary':reason, 'evidence_ref':ref,'scope':list(scope_ids),
         'acceptance':acceptance,**({'checks_path':str(checks_path)} if checks_path else {}),
-        **({'apply_review_return_ids':list(apply_review_ids),'handling_refs':handling} if apply_review_ids or handling else {})})
+        **({'apply_review_return_ids':list(apply_review_ids),'handling_refs':handling} if apply_review_ids or handling else {}),
+        **({'wave_bookmark':wave} if wave else {})})
 
 
 def add_parsers(subparsers):
-    q = subparsers.add_parser('work-capacity', help='Read the shared DSH FIFO or maintain its original queue')
+    q = subparsers.add_parser('work-capacity', help='Read host-specific author and review capacity')
+    q.add_argument('--host', choices=('dsh', 'devin'), default='dsh', help='Select an independent host pool (default: dsh)')
     maintenance = q.add_mutually_exclusive_group()
     maintenance.add_argument('--adopt-policy',action='store_true',help='Maintainer: fence only proven never-started legacy transports in the original queue')
     maintenance.add_argument('--retire-exited-waits',action='store_true',help='Maintainer: remove only review-wait tickets whose original execution has exited')
@@ -1557,9 +1726,11 @@ def add_parsers(subparsers):
     q.add_argument('--config')
     q.add_argument('--execute', action='store_true', help='Start only a new unbound request through its qualified runtime')
     q.add_argument('--instructions', help='Original owner instruction file for the same terminal Session')
+    q.add_argument('--basis', help='Original review return or revise decision for an already delivered author assignment')
     q.add_argument('--continue', dest='continue_original', action='store_true', help='Continue exact --run-id technically in its original Session, without a new instruction file')
     q.add_argument('--run-id', help='Exact original author or review attempt')
     q.add_argument('--resume-stopped', action='store_true', help='Explicitly resume the ended assignment or selected confirmed stopped Session with --instructions')
+    q.add_argument('--goal-max-rounds',type=int,help='Owner-approved total for the exact exhausted DSH Goal')
     q = subparsers.add_parser('work-end', help='Explicitly end an exact assignment; adoption has no control effect')
     q.add_argument('--request', required=True)
     q.add_argument('--note', required=True)
@@ -1579,8 +1750,15 @@ def add_parsers(subparsers):
     q.add_argument('--summary',action='store_true',help='Show exact candidates, original opinions and pending handoff checks')
     q = subparsers.add_parser('work-review-record',help='Index an explicitly stated original independent conclusion; no new review')
     q.add_argument('--supersedes',action='append',default=[],help='Exact prior review return explicitly resolved/replaced by this complete original opinion; repeatable')
+    q.add_argument('--recurs-after',help='Refer an independently confirmed material recurrence using the earlier corrected opinion return ID')
     q.add_argument('--return-id',required=True);q.add_argument('--conclusion',required=True,choices=('supported','supported_with_limits','material_issue','not_assessed'))
     q.add_argument('--basis',required=True)
+    q = subparsers.add_parser('work-submit-batch', help='Preview or execute exact accepted native review roots one at a time')
+    q.add_argument('--task',required=True)
+    q.add_argument('--input',help='Batch selection with roots referring to original adoptions and native input files')
+    q.add_argument('--adoption',help='Original adoption ID for one root');q.add_argument('--request',help='Original native request file for one root')
+    q.add_argument('--use',help='Original adoption file or line/JSON locator for a standalone Source or Flow')
+    q.add_argument('--execute',action='store_true')
     q = subparsers.add_parser('work-maintenance', help='Generated unresolved maintenance findings across original tasks')
     q.add_argument('--limit', type=int, default=20)
     q.add_argument('--offset', type=int, default=0)
@@ -1608,21 +1786,46 @@ def add_parsers(subparsers):
     q.add_argument('--offset', type=int, default=0)
     q.add_argument('--all', action='store_true', help='Include settled closed tasks; history remains at work-show')
     q = subparsers.add_parser('work-show', help='Read one complete task or the exact frozen inputs of an original run')
-    q.add_argument('--id', required=True)
-    q.add_argument('--detail', action='store_true', help='Expand historical events and all internal records')
+    q.add_argument('--id', action='append')
+    q.add_argument('--mine', action='store_true', help='Wait across current responsibilities of this native Session')
+    views=q.add_mutually_exclusive_group()
+    views.add_argument('--detail', action='store_true', help='Expand historical events and all internal records')
+    views.add_argument('--scope', metavar='SCOPE_ID', help='Open one agreed scope item with its original authors, returns and dependencies')
+    views.add_argument('--history', action='store_true', help='Page the original task events')
+    views.add_argument('--wave', nargs='?', const='latest', metavar='DECISION_ID', help='Read a closed wave and its cutoff, or preview current wave facts')
+    q.add_argument('--wait-seconds', type=int, help='Wait locally for a new actionable item, at most 1800 seconds')
+    q.add_argument('--after', help='Resume reading after the last current-responsibility cursor')
     q.add_argument('--output')
     q.add_argument('--limit',type=int,default=10);q.add_argument('--offset',type=int,default=0)
+    q = subparsers.add_parser('work-wait',help='Defer one current item until its original dependency changes or a stated time')
+    q.add_argument('--task',required=True);q.add_argument('--item',required=True)
+    dependency=q.add_mutually_exclusive_group()
+    dependency.add_argument('--for-request',help='Exact prerequisite request')
+    dependency.add_argument('--for-file',help='Original dependency evidence path')
+    q.add_argument('--until',help='Recheck time including timezone')
+    q.add_argument('--reason',help='Reason in the responsible person’s own words')
+    q.add_argument('--external',action='store_true',help='This exact dependency blocks further core work')
+    q = subparsers.add_parser('work-wave',help='Bookmark the facts at one existing original decision')
+    q.add_argument('--task',required=True);q.add_argument('--decision',required=True)
     q = subparsers.add_parser('work-create',help='Register the original complete task')
     q.add_argument('--brief',required=True); q.add_argument('--owner'); q.add_argument('--id')
     q.add_argument('--contract')
     q = subparsers.add_parser('work-request',help='Assign an original complete work package')
     q.add_argument('--task',required=True); q.add_argument('--brief',required=True)
     q.add_argument('--review-of',help='Request independent review of this original assignment using the saved brief')
+    q.add_argument('--continues',help='Explicitly retain the original author and scientific delivery lineage')
     q.add_argument('--contract');q.add_argument('--scope',action='append',default=[])
     for action in ('revise','reopen','pause','resume','cancel','complete','transfer'):
         q = subparsers.add_parser('work-'+action,help='Record an explicit task decision')
         q.add_argument('--task',required=True); q.add_argument('--note',required=True)
         if action == 'revise':
+            q.add_argument('--base-sha256', required=True, help='Accepted baseline SHA-256 returned by work-show')
+            why=q.add_mutually_exclusive_group(required=True)
+            why.add_argument('--reason',help='Original wording of the change decision')
+            why.add_argument('--reason-file',help='Saved original change decision')
+            q.add_argument('--contract', help='Accept these exact changed delivery terms in the same baseline revision')
+            q.add_argument('--affected-scope', action='append', default=[], help='Scope changed by this decision, repeat for each exact item')
+            q.add_argument('--affected-request', action='append', default=[], help='Unsent request affected by this decision, repeat as needed')
             q.add_argument('--authorization', help='Original explicit user instruction authorizing this maintainer to edit this plan; preserves the lead and scientific ownership')
         if action == 'transfer': q.add_argument('--owner',required=True)
     q = subparsers.add_parser('work-return',help='Save the actual report or read back an original native run')
@@ -1636,6 +1839,7 @@ def add_parsers(subparsers):
     q.add_argument('--scope',action='append',default=[]);q.add_argument('--acceptance',choices=('stage','final'),default='stage');q.add_argument('--checks')
     q.add_argument('--apply-review',action='append',default=[],help='Explicit task-lead acceptance of this original review after author handling for exact current candidates/use; repeatable')
     q.add_argument('--handling',action='append',default=[],help='Complete original author handling file supporting --apply-review; repeatable')
+    q.add_argument('--wave',help='Original sponsor: cite the wave bookmark handled by this disposition')
     q = subparsers.add_parser('work-business-bind',help='Associate exact dataset subjects with a task')
     q.add_argument('--task',required=True); q.add_argument('--package',required=True)
     q = subparsers.add_parser('work-business-observe',help='Record an original native observation')

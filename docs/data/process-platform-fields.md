@@ -1,6 +1,6 @@
 # Process 年度量与说明字段
 
-用于 Process 作者构造，以及普通编辑／Data Check／保存后的字段回验。依据当前 P2 v3；主流程见[候选准备](../../roles/CANDIDATE-PREPARATION.md#process-annual-quantity-and-platform-round-trip)。本页规定作者输入和验收，不实现 Platform 序列化或替代原生 SDK／CLI 校验。
+用于 Process 作者构造，以及普通编辑／Data Check／保存后的字段回验。依据当前 P2 v3；主流程见[候选准备](../../workflows/dataset-review/candidate-preparation.md#process-annual-quantity-and-platform-round-trip)。本页规定作者输入和验收，不实现 Platform 序列化或替代原生 SDK／CLI 校验。
 
 ## 先固定年度量含义
 

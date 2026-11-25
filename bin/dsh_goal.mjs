@@ -3,6 +3,49 @@ import { Socket } from 'node:net'
 import { createInterface } from 'node:readline'
 import { safeValue } from './safe_diagnostics.mjs'
 export const GOAL_CONTEXT_BUDGET_BYTES=2048
+let originalControl
+
+export function bindOriginalGoalControl(channel) {
+  originalControl = channel
+}
+
+function budgetError(code, message) {
+  return Object.assign(new Error(message), {code})
+}
+
+export async function authorizeGoalBudget(budget) {
+  if (!originalControl || !await originalControl.check('goal_budget', JSON.stringify(budget), originalControl.signal)) {
+    throw budgetError('DSH_GOAL_BUDGET_WITHHELD', 'The original host withheld the explicit Goal budget.')
+  }
+}
+
+export function editAndResumeGoal(goals, agent, budget, emit) {
+  const before = goals.get(agent)
+  if (agent.session.id !== budget.session_id || before?.id !== budget.id || before.revision !== budget.revision ||
+      before.phase !== 'blocked' || before.activation !== 'disarmed' || before.blockedReason?.code !== 'round-limit' ||
+      before.maxGoalRounds !== budget.previous_max || before.roundsStarted !== budget.previous_max ||
+      !Number.isSafeInteger(budget.max_rounds) || budget.max_rounds <= budget.previous_max) {
+    throw budgetError('DSH_GOAL_BUDGET_STALE', 'The live Goal differs from the exact exhausted Goal in the original decision.')
+  }
+  const observe = (stage, current) => emit({type:'htam_goal_budget',stage,sessionId:agent.session.id,
+    goal:{id:current.id,revision:current.revision,phase:current.phase,activation:current.activation,
+      roundsStarted:current.roundsStarted,maxGoalRounds:current.maxGoalRounds}})
+  const edited = goals.edit(agent,{id:before.id,revision:before.revision},{maxGoalRounds:budget.max_rounds})
+  const current = goals.get(agent)
+  if (current?.id !== before.id || current.revision !== edited.revision || current.phase !== 'blocked' ||
+      current.maxGoalRounds !== budget.max_rounds || current.roundsStarted !== before.roundsStarted ||
+      current.objective !== before.objective) {
+    throw budgetError('DSH_GOAL_BUDGET_READBACK', 'The native Goal edit did not read back as authorized.')
+  }
+  observe('edited', current)
+  const resumed = goals.resume(agent, {id:current.id,revision:current.revision})
+  const active = goals.get(agent)
+  if (active?.id !== current.id || active.revision !== resumed.revision || active.phase !== 'active' ||
+      active.activation !== 'armed' || active.maxGoalRounds !== budget.max_rounds) {
+    throw budgetError('DSH_GOAL_RESUME_READBACK', 'The edited native Goal did not read back as active and armed.')
+  }
+  observe('resumed', active)
+}
 
 // Native CAS activation on an already-authorized technical continuation. Never
 // change objective, budget, stopped/blocked/completed phase or native identity.
@@ -17,15 +60,29 @@ export function controlChannel(fd, emit = event => console.log(JSON.stringify(ev
   if (!Number.isInteger(fd)) return null
   const socket = new Socket({fd, readable:true, writable:true})
   const lines = createInterface({input:socket})
+  const connection = new AbortController()
+  const peer = new AbortController()
   const pending = new Map(); let serial = 0, closed = false
-  const fail = () => { closed = true; for (const p of pending.values()) p.reject(new Error('Original dispatcher control channel closed')); pending.clear() }
-  socket.on('error', fail); socket.on('close', fail); socket.on('end', fail)
+  const fail = () => {
+    closed = true
+    connection.abort()
+    for (const p of pending.values()) p.reject(new Error('Original dispatcher control channel closed'))
+    pending.clear()
+  }
+  const disconnected = () => {
+    if (closed) return
+    fail()
+    peer.abort()
+  }
+  socket.on('error', disconnected); socket.on('close', disconnected); socket.on('end', disconnected)
   lines.on('line', line => {
     let value; try { value = JSON.parse(line) } catch { return }
     const p = pending.get(value.id); if (!p) return
     pending.delete(value.id); p.resolve(value)
   })
   return {
+    signal: connection.signal,
+    disconnected: peer.signal,
     async request(kind, text, signal) {
       if (closed) throw new Error('Original dispatcher control channel closed')
       if (signal?.aborted) throw new Error('Original native step cancelled')
@@ -57,7 +114,7 @@ export function goalRecoveryContext(goal) {
     'On this continuation, first get_goal and read the complete owner instruction at the original request/continuation entry. '+
     'Use its goal_id and revision. For an exhausted cap with explicit extra investment, update_goal action edit max_goal_rounds '+
     '(used rounds + explicitly added rounds, or the explicit total cap), then action resume with the returned revision; edit preserves phase. '+
-    'For a complete Goal and explicitly assigned new work, create_goal for that complete new objective in this same Session; complete cannot resume. '+
+    'If the owner requests a correction to this same candidate after Goal completion, create_goal for that correction. Separate deliverables use their own author requests and Sessions. '+
     'An active disarmed Goal can resume for authorized continuation. A paused Goal requires explicit owner recovery. '+
     'Read actual tool results, then continue making, checking, requesting independent review and correcting the work. '+
     'Native Goal rounds perform automatic continuation; do not replace them with an external prompt loop or invent extra investment.'

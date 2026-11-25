@@ -6,6 +6,7 @@ Missing receipts and inaccessible process identities are unknown, never quiescen
 import contextlib
 import ctypes
 import ctypes.util
+from datetime import datetime, timezone
 import errno
 import fcntl
 import hashlib
@@ -38,8 +39,9 @@ def atomic_json(path, value):
 
 
 class FileLock:
-    def __init__(self, root, key):
-        self.path = Path(root) / '.control/execution-locks' / (hashlib.sha256(json.dumps(key).encode()).hexdigest() + '.lock')
+    def __init__(self, root, key, *, directory=None):
+        home = Path(directory) if directory is not None else Path(root) / '.control/execution-locks'
+        self.path = home / (hashlib.sha256(json.dumps(key).encode()).hexdigest() + '.lock')
         self.fd = None
 
     def __enter__(self):
@@ -104,6 +106,18 @@ def metadata_path(home, run_id):
     return Path(home) / 'runs' / run_id / 'execution.json'
 
 
+def reused_group_leader(record, current):
+    """A later process with the same leader PID proves the old group ended."""
+    if not (record.get('pid') == current.get('pid') == record.get('pgid') and record.get('boot')
+            and record['boot'] == current.get('boot') and record.get('start') and current.get('start')):
+        return False
+    try:
+        fmt = '%a %b %d %H:%M:%S %Y'
+        return time.strptime(current['start'], fmt) > time.strptime(record['start'], fmt)
+    except ValueError:
+        return False
+
+
 def original_group(record):
     """Read the lifetime of the recorded group without signalling a replacement."""
     if not record or not isinstance(record.get('pid'), int) or record['pid'] <= 0:
@@ -117,15 +131,8 @@ def original_group(record):
             return {'state': 'unknown', 'reason': 'Original process start or boot is unverified'}
         if current.get('start') == record['start']:
             return {'state': 'active', 'reason': 'Original process is alive'}
-        # A new PID cannot be allocated while a group with that number exists.
-        # Only use this proof for a recorded group leader on the same boot.
-        if group == pid and current.get('start'):
-            try:
-                fmt = '%a %b %d %H:%M:%S %Y'
-                if time.strptime(current['start'], fmt) > time.strptime(record['start'], fmt):
-                    return {'state': 'exited', 'reason': 'A later process owns the original leader PID'}
-            except ValueError:
-                pass
+        if reused_group_leader(record, current):
+            return {'state': 'exited', 'reason': 'A later process owns the original leader PID'}
         return {'state': 'unknown', 'reason': 'Group lifetime cannot be attributed to the original leader'}
     if not isinstance(group, int) or group <= 0:
         return {'state': 'unknown', 'reason': 'Missing original process group'}
@@ -188,7 +195,95 @@ def observe_run(root, run):
     observed = execution_observation(path)
     if observed.get('metadata_readable') is False:
         return legacy_observation(root, run, spec, path)
+    if (observed['state'] == 'unknown' and run.get('target_host') == 'deepseek_harness'
+            and run.get('outcome') in ('failed','unknown') and not run.get('native_identity')):
+        # DSH records cancellation only while the admitted capacity owner has
+        # not spawned its child. A missing PID or stale intent alone proves nothing.
+        capacity = [event for event in run.get('events', ()) if event['kind']=='capacity']
+        if not capacity or capacity[-1]['payload'].get('phase') != 'cancelled_before_start':
+            return observed
+        final = capacity[-1]
+        sequence = final['payload'].get('sequence')
+        if not sequence or not any(e['payload'].get('phase') == 'admitted' and
+                                   e['payload'].get('sequence') == sequence for e in capacity[:-1]):
+            return observed
+        if any(e['payload'].get('phase') not in ('queued','admitted','cancelled_before_start') for e in capacity):
+            return observed
+        try:
+            record = json.loads(path.read_bytes())
+        except (OSError, ValueError):
+            return observed
+        if not isinstance(record, dict):
+            return observed
+        if prior_native := record.get('native_identity'):
+            from harness_tasks import read_run
+            if (not isinstance(prior_native,dict) or not spec.get('native_parent_run_id')
+                    or prior_native.get('id') != spec.get('requested_session_id')):
+                return observed
+            try:
+                parent = read_run(root,spec['native_parent_run_id'])
+            except (ValueError, KeyError):
+                return observed
+            if parent['request_id'] != run['request_id'] or parent['native_identity'] != prior_native:
+                return observed
+        manager = record.get('manager') or {}
+        if (record.get('phase') == 'launch_intent' and record.get('run_id') == run['id']
+                and record.get('request_id') == run['request_id'] and not record.get('child')
+                and not record.get('tools')
+                and manager.get('start') and manager.get('boot') and matches(manager) is False
+                and not any((path.parent/'delivery').glob('operation-*'))):
+            return {'state':'exited','source':str(path),'cancelled_before_spawn_event':final['id']}
     return observed
+
+
+def tool_activity(root, run):
+    """Read positive tool-start evidence for this exact native attempt."""
+    from harness_package import launch_spec
+    native = run.get('native_identity')
+    if not native or not native.get('turn_id'):
+        return None
+    try:
+        home = launch_spec(root, run).get('evidence_home')
+        if not home:
+            return None
+        record = json.loads(metadata_path(home, run['id']).read_bytes())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or any(record.get(key) != run[field] for key, field in
+            (('run_id', 'id'), ('request_id', 'request_id'))):
+        return None
+    bound = record.get('native_identity')
+    if not isinstance(bound, dict) or any(bound.get(key) != native.get(key) for key in
+            ('host', 'kind', 'id', 'instance', 'turn_id')):
+        return None
+    tools = record.get('tools')
+    if not isinstance(tools, dict):
+        return None
+    observed, legacy = [], []
+    for tool in tools.values():
+        if not isinstance(tool, dict) or tool.get('phase') != 'spawned':
+            continue
+        at = tool.get('started_at')
+        if isinstance(at, str):
+            try:
+                instant = datetime.fromisoformat(at)
+                if instant.tzinfo is not None:
+                    observed.append(instant)
+                    continue
+            except ValueError:
+                pass
+        process = tool.get('process')
+        start = process.get('start') if isinstance(process, dict) else None
+        if isinstance(start, str):
+            try:
+                legacy.append((datetime.strptime(start, '%a %b %d %H:%M:%S %Y'), start))
+            except ValueError:
+                pass
+    if observed:
+        return {'at': max(observed).astimezone(timezone.utc).isoformat(), 'source': 'original_tool_spawn'}
+    if legacy:
+        return {'at': max(legacy)[1], 'source': 'original_tool_os_start', 'clock': 'original_host_local_time'}
+    return None
 
 
 @contextlib.contextmanager
@@ -248,7 +343,7 @@ def _process_markers(pid):
     return markers
 
 
-def _process_snapshot():
+def _process_snapshot(*, group=None):
     call = subprocess.run(['ps', '-axo', 'uid=,pid=,ppid=,pgid=,stat=,lstart='],
                           capture_output=True, text=True, timeout=5, check=True)
     result = {}
@@ -256,9 +351,11 @@ def _process_snapshot():
         parts = line.split()
         if len(parts) != 10:
             raise ValueError('Incomplete OS process identity row')
-        uid, pid, parent, group = map(int, parts[:4])
-        if uid == os.getuid() and not parts[4].startswith('Z'):
-            result[pid] = {'pid': pid, 'ppid': parent, 'pgid': group, 'start': ' '.join(parts[5:])}
+        uid, pid, parent, pgid = map(int, parts[:4])
+        if (pgid == group if group is not None else uid == os.getuid()) and not parts[4].startswith('Z'):
+            result[pid] = {'pid': pid, 'ppid': parent, 'pgid': pgid, 'start': ' '.join(parts[5:])}
+    if group is not None:
+        return result
     # The observer and its own ps helper are not the original execution.
     excluded = {os.getpid()}
     while extra := {pid for pid, row in result.items() if row['ppid'] in excluded} - excluded:
@@ -424,7 +521,8 @@ class ExecutionLease:
 
     def tool_spawned(self, key, process):
         with self.metadata_lock:
-            self.value['tools'][key] = {'phase': 'spawned', 'process': {'pgid': process.pid, **process_identity(process.pid)}}
+            self.value['tools'][key] = {'phase': 'spawned', 'started_at': datetime.now(timezone.utc).isoformat(),
+                                        'process': {'pgid': process.pid, **process_identity(process.pid)}}
             atomic_json(self.path, self.value)
 
     def tool_not_started(self, key):

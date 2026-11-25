@@ -1,6 +1,7 @@
 """Exact original bytes and native operation evidence; no remote writes/models."""
 import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -137,6 +138,38 @@ class DeliveryEvidenceTests(unittest.TestCase):
             recovered=delivery.EvidenceSet(c,self.root,tasks.read_request(self.root,'request'),r,scope.Evidence(self.root),extra_refs=[moved])
             self.assertFalse(recovered.selection_missing);self.assertEqual(len(recovered.artifacts),1)
 
+    def test_frozen_gate_keeps_both_declared_reports_after_origin_is_removed(self):
+        from production_review import _save_fixed
+        directory=self.home/'origin'
+        candidates=[]; checks=[]
+        for name in ('first','second'):
+            body=candidate(ident=name)
+            source=_save_fixed(self.root,directory/(name+'.json'),json.dumps(body).encode())
+            validation=_save_fixed(self.root,directory/'checks'/(name+'.validation.json'),json.dumps(self.validation(body)).encode())
+            candidates.append(source)
+            checks.append({'status':'passed','native_report':'checks/'+name+'.validation.json','native_report_sha256':validation['sha256']})
+        report={'schema':'data-workspace.lca-gate.v4','inputs':{r['path']:r['sha256'] for r in candidates},
+                'outcome':'checks_completed','checks':checks}
+        gate=_save_fixed(self.root,directory/'gate.json',json.dumps(report).encode())
+        _save_fixed(self.root,directory/'checks'/'unrelated.validation.json',b'{}')
+        before=self.returned('original-gate',[gate,*candidates])
+        def inspect(returned):
+            with contextlib.closing(tasks._connect(self.root,True)) as c:
+                pool=delivery.EvidenceSet(c,self.root,tasks.read_request(self.root,'request'),returned,scope.Evidence(self.root))
+                return {delivery.body_identity(pool.peek(r)):bool(pool.native_facts(r)['structure']) for r in pool.artifacts}
+        self.assertEqual(len(inspect(before)),2)
+        sealed=delivery.explicit_files(self.root,[gate['path'],*(r['path'] for r in candidates)],home=self.home/'archive')
+        archived_path=Path(sealed[0]['path'])
+        self.assertEqual(archived_path.read_bytes(),Path(gate['path']).read_bytes())
+        self.assertFalse((archived_path.parent/'checks'/'unrelated.validation.json').exists())
+        after=self.returned('archived-gate',sealed)
+        import shutil
+        shutil.rmtree(directory)
+        compared=inspect(after)
+        self.assertEqual(compared,{('process','first','01.00.000'):True,('process','second','01.00.000'):True})
+        (archived_path.parent/'checks'/'second.validation.json').write_text('{}')
+        self.assertFalse(all(inspect(after).values()))
+
     def test_wrong_content_same_identity_has_no_old_validation_support(self):
         old=candidate(amount='1');current=candidate(amount='2')
         facts,_=self.facts(current,[self.validation(old)])
@@ -162,6 +195,45 @@ class DeliveryEvidenceTests(unittest.TestCase):
         self.assertEqual([a['sha256'] for a in pool.artifacts],[body['sha256']])
         self.assertEqual(selected,pool.artifacts)
 
+    def test_published_predecessor_in_review_files_remains_comparison_evidence(self):
+        predecessor = candidate()
+        successor = candidate(amount='2')
+        publication = successor['processDataSet']['administrativeInformation']['publicationAndOwnership']
+        publication['common:dataSetVersion'] = '01.00.001'
+        publication['common:referenceToPrecedingDataSetVersion'] = {
+            '@refObjectId': 'process-one', '@version': '01.00.000'}
+        old = self.save('predecessor.json', predecessor)
+        current = self.save('successor.json', successor)
+        other = self.save('other.json', candidate(ident='process-two'))
+        tasks.mutate(self.root, 'run-intent', self.actor, {
+            'id': 'author-run', 'request_id': 'request', 'config_ref': self.ref(self.config_path),
+            'input_refs': [self.input_ref], 'target_host': 'codex', 'operation': 'start'})
+
+        def index(name, action, **record):
+            ref = self.save(name, {'schema': delivery.CLI_SCHEMA, 'source': 'trusted_public_cli',
+                'run_id': 'author-run', 'request_id': 'request', 'operation': 'dataset process ' + action,
+                'argv': ['dataset', 'process', action], 'capture_complete': True, **record})
+            tasks.mutate(self.root, 'run-delivery-evidence', self.actor, {'id': 'author-run', 'record_ref': ref})
+
+        def read_members(name):
+            returned = self.returned(name, [old, current, other])
+            with contextlib.closing(tasks._connect(self.root, True)) as c:
+                reader = scope.Evidence(self.root)
+                pool = delivery.EvidenceSet(c, self.root, tasks.read_request(self.root, 'request'),
+                                            {**returned, 'run_id': 'author-run'}, reader)
+                self.assertEqual(pool.peek(old), predecessor)
+                return {item['sha256'] for item in pool.artifacts}
+
+        index('current-validation.json', 'validate', input_ref=current, candidate_ref=current, input_unchanged=True)
+        self.assertEqual(read_members('without-readback'), {old['sha256'], current['sha256'], other['sha256']})
+        published = self.receipt('dataset process get', predecessor)
+        published['data']['subject']['stateCode'] = 100
+        published['data']['content'] = predecessor
+        index('published-get.json', 'get', stdout_ref=self.save('get-result.json', published))
+        self.assertEqual(read_members('with-comparison'), {current['sha256'], other['sha256']})
+        index('old-validation.json', 'validate', input_ref=old, candidate_ref=old, input_unchanged=True)
+        self.assertEqual(read_members('both-worked'), {old['sha256'], current['sha256'], other['sha256']})
+
     def test_native_write_requires_original_request_account_environment_and_content(self):
         body=candidate();doc=self.receipt('dataset process create',body)
         doc['data']['contentDigest']=delivery.content_digest(body,ordered=True)
@@ -178,6 +250,25 @@ class DeliveryEvidenceTests(unittest.TestCase):
         body=candidate();doc=self.receipt('dataset process create',body)
         doc['data']['contentDigest']=delivery.content_digest(body);doc['outcome']='preview_completed'
         facts,_=self.facts(body,[doc]);self.assertEqual(facts['saved'],[])
+
+    def test_late_effect_receipt_resolves_only_the_same_operation(self):
+        body=candidate()
+        unknown=self.receipt('dataset process create',body)
+        unknown.update(status='unknown',outcome='write_outcome_unknown')
+        other=json.loads(json.dumps(unknown))
+        other['context']['requestId']='another-attempt'
+        verified=self.receipt('dataset process create',body)
+        verified['data'].update(contentDigest=delivery.content_digest(body),
+            readback={'contentMatchesIntent':True,'subject':verified['data']['subject']})
+        facts,_=self.facts(body,[unknown,other,verified])
+        self.assertTrue(facts['full_readback'])
+        unresolved,=facts['unknown_effects']
+        self.assertEqual(json.loads(Path(unresolved['path']).read_bytes())['context']['requestId'],'another-attempt')
+
+    def test_group_save_does_not_inherit_direct_dataset_dry_run(self):
+        argv=['dataset','model','result-group','--dry-run','--input','-']
+        self.assertEqual(delivery.operation_effect(argv,{'action':'save'}),'possible_write')
+        self.assertEqual(delivery.operation_effect(argv,{'action':'recover'}),'read_only')
 
     def test_local_output_failure_does_not_erase_an_explicit_native_written_effect(self):
         body=candidate();doc=self.receipt('dataset process save',body)
@@ -213,6 +304,8 @@ class DeliveryEvidenceTests(unittest.TestCase):
             cp=subprocess.run(argv,capture_output=True,text=True,env=os.environ.copy(),timeout=10)
             self.assertEqual(cp.returncode,0,cp.stderr);return json.loads(cp.stdout)
         first=invoke();second=invoke();self.assertEqual(first['id'],second['id'])
+        self.assertEqual(first['delivery_effects']['object_counts'],{'candidate_only':1})
+        self.assertEqual(first['delivery_effects'],second['delivery_effects'])
         with contextlib.closing(tasks._connect(self.root,True)) as c:
             r=scope._returns(c,'task')[-1]
             pool=delivery.EvidenceSet(c,self.root,tasks.read_request(self.root,'request'),r,scope.Evidence(self.root))
@@ -229,29 +322,21 @@ class DeliveryEvidenceTests(unittest.TestCase):
             pool=delivery.EvidenceSet(c,self.root,tasks.read_request(self.root,'request'),current,scope.Evidence(self.root))
             self.assertEqual(len(pool.artifacts),2)
 
-    def test_a07_live_named_stop_at_public_launcher(self):
-        import os
+    def test_named_stop_and_conflict_at_public_launcher(self):
         import shutil
-        import harness_decisions as decisions
+        from task_ledger import decisions
+        from review_fixtures import FLOW_ID, PROCESS_ID, VERSION, process
 
-        materials = REPO / 'materials/packages/tiangong-package-gap-global-main-20261110'
-        original = materials / ('apple-scm-reuse-20261110/apple/material-dispatch-20261115/'
-                                'program-38e55011e83b6769')
-        saved_home = original / ('runs/program:f9d4f2d30d5a99535b2c784e580d486e/delivery/'
-                                 'operation-65c19f2e43c14a4cb790f64b8e53c2d4')
-        unknown_home = original / ('runs/program:cdace02e7d7451affb15acfaac4be2dd/delivery/'
-                                   'operation-be7d7f88676248f4a92f31fab102bf84')
-        if not (saved_home/'stdout.bin').is_file() or not (unknown_home/'stdout.bin').is_file():
-            self.skipTest('Requires the retained A07 source artifacts in the original workspace')
-        original_receipt = json.loads((saved_home/'stdout.bin').read_bytes())
-        unknown_receipt = json.loads((unknown_home/'stdout.bin').read_bytes())
-        self.assertEqual(original_receipt['outcome'], 'dataset_written')
-        self.assertEqual(unknown_receipt['status'], 'unknown')
-        a07 = (saved_home/'input.json').read_bytes()
-        value = json.loads(a07)
-        self.assertEqual(value['id'], '682319ae-2cba-4b07-9e56-1ec02bf45697')
+        value = {'id':PROCESS_ID, 'version':VERSION, 'requestId':'synthetic-save',
+                 'expectedActor':'0037f465-3686-42a4-a419-b0ac5bec7c7e',
+                 'expectedEnvironment':'https://review-fixture.invalid',
+                 'content':process(), 'expectedContent':process(amount='0.100')}
+        stopped_input = json.dumps(value).encode()
         source = self.home/'original-stop.md'
-        shutil.copyfile(original/'work/AUTHORIZATION-VIOLATION-REPORT-20261118.md', source)
+        source.write_text('Stop saving the named synthetic draft while the prior operation is unresolved.')
+        from harness_scope import save_contract
+        contract = self.save('synthetic-write-contract.json',{'endpoint':'saved_draft'})
+        save_contract(self.root,self.actor,'request','request',contract['path'],source)
         stop_ref = {**self.ref(source), 'locator': 'file', 'decided_by': self.actor['id']}
         scope = {'task': 'task', 'package': 'request', 'object': 'process/'+value['id']+'/'+value['version'],
                  'action':'save', 'project':'isolated-project', 'account':value['expectedActor']}
@@ -308,46 +393,34 @@ else:
             return public(*prefix,'dataset','process','save','--input','-' if via_stdin else str(pending),
                           '--json', raw=raw if via_stdin else None)
 
-        original_id = value['requestId']
         stopped = {**snapshot,'id':'named-stop','statement':'stop'}
         unauthorized = decide(stopped, env={**environment,'CODEX_THREAD_ID':'other-author'})
         self.assertNotEqual(unauthorized.returncode, 0)
         registered = decide(stopped)
         self.assertEqual(registered.returncode, 0, registered.stderr)
-        refused = save(a07, ('--json',))
+        refused = save(stopped_input, ('--json',))
         self.assertEqual(json.loads(refused.stderr)['status'],'stopped')
-        self.assertEqual(json.loads(save(a07, ('--',), via_stdin=True).stderr)['status'],'stopped')
+        self.assertEqual(json.loads(save(stopped_input, ('--',), via_stdin=True).stderr)['status'],'stopped')
         self.assertFalse(log.exists())
 
-        retry = json.dumps({**json.loads((unknown_home/'input.json').read_bytes()),
-                            'requestId':'substituted-id'}).encode()
+        retry = json.dumps({**value,'requestId':'substituted-id'}).encode()
         self.assertEqual(json.loads(save(retry).stderr)['status'],'stopped')
         self.assertFalse(log.exists())
         self.assertEqual(json.loads(public('dataset','process','get','--id',value['id'],
             '--version',value['version'],'--json').stdout)['outcome'],'dataset_read')
-        a05 = json.loads((original/'work/candidates/A05Li2CO3.json').read_bytes())
-        kind, ident, version = delivery.body_identity(a05)
-        self.assertEqual(kind, 'process')
-        positive = json.dumps({**value,'id':ident,'version':version,'content':a05,'expectedContent':a05,
-                               'requestId':'isolated-a05-control'}).encode()
+        other = process(identifier=FLOW_ID)
+        positive = json.dumps({**value,'id':FLOW_ID,'content':other,'expectedContent':other,
+                               'requestId':'isolated-other-candidate'}).encode()
         self.assertEqual(json.loads(save(positive).stdout)['outcome'],'dataset_written')
         self.assertEqual(json.loads(log.read_bytes())['sha256'], hashlib.sha256(positive).hexdigest())
         conflict = decide({**snapshot,'id':'conflicting-release','statement':'release'})
         self.assertEqual(conflict.returncode, 0, conflict.stderr)
-        conflict_result = json.loads(save(a07).stderr)
+        conflict_result = json.loads(save(stopped_input).stderr)
         self.assertEqual(conflict_result['status'],'conflict')
         self.assertEqual(len(log.read_text().splitlines()),1)
         records = [json.loads(p.read_text()) for p in (self.home/'runs/admission-run/delivery').glob('*/record.json')]
         refused_records = [row for row in records if row.get('dispatch') == 'not_started']
         self.assertEqual(len(refused_records),4)
-        if directory := os.environ.get('HTAM_1010_EVIDENCE'):
-            proof = {'source_saved_record':str(saved_home/'record.json'), 'source_saved_request_id':original_id,
-                'source_saved_outcome':original_receipt['outcome'],
-                'source_unknown_record':str(unknown_home/'record.json'), 'source_unknown_outcome':unknown_receipt['outcome'],
-                'recorded_stop':json.loads(registered.stdout), 'records':refused_records,
-                'transport':json.loads(log.read_bytes()), 'unrelated_bad_journal_ignored':True,
-                'read_result':'dataset_read', 'unauthorized_stop_rejected':True}
-            (Path(directory)/'a07-launcher.json').write_text(json.dumps(proof,ensure_ascii=False,indent=2))
 
     def test_managed_input_freeze_failure_does_not_start_native_cli(self):
         import contextlib
@@ -370,6 +443,38 @@ else:
         self.assertEqual(record['dispatch'],'not_started')
         self.assertEqual(record['local_failure']['stage'],'input_freeze')
         self.assertEqual(record['local_failure']['system_code'],'EACCES')
+
+    def test_managed_input_refusal_reports_its_base_without_exposing_private_paths(self):
+        source = self.home / 'source files'
+        empty = self.home / 'work'
+        source.mkdir()
+        empty.mkdir()
+        (source / 'input.json').write_text(json.dumps(candidate()))
+        cases = [(empty, 'input.json', 'input_open', (empty / 'input.json').relative_to(self.root).as_posix()),
+                 (self.root, 'input.json', 'input_open', 'input.json'),
+                 (self.root, '.control/accounts.json', 'input_path', None),
+                 (self.root, '../outside.json', 'input_path', None)]
+        for index, (cwd, path, stage, target) in enumerate(cases):
+            with self.subTest(path=path):
+                home = self.home / 'operations' / str(index)
+                stderr = io.StringIO()
+                with patch.dict(os.environ, {'HTAM_DELIVERY_ROOT': str(self.root), 'HTAM_DELIVERY_RUN_ID': 'probe'}), \
+                        patch.object(delivery,'_capture_home',return_value=({'id':'probe','request_id':'request'},home)), \
+                        patch.object(delivery.subprocess,'Popen') as launched, contextlib.redirect_stderr(stderr):
+                    code = delivery.execute_native(self.root,['not-executed'],
+                        ['dataset','process','save','--input',path],env={},cwd=cwd)
+                self.assertEqual(code, 1)
+                launched.assert_not_called()
+                record = json.loads((home / 'record.json').read_bytes())
+                failure = record['local_failure']
+                self.assertEqual(record['dispatch'], 'not_started')
+                self.assertEqual(failure['stage'], stage)
+                self.assertEqual(failure['input_resolution'], {
+                    'path_scope': 'workspace', 'input_kind': 'relative', 'base': cwd.relative_to(self.root).as_posix(),
+                    **({'target': target} if target else {})})
+                self.assertNotIn(str(self.root), stderr.getvalue())
+                self.assertNotIn('.control', stderr.getvalue())
+                self.assertNotIn('outside.json', stderr.getvalue())
 
     def capture(self,*,stdin=False,context=True,broken=False,old_output=False,index_failure=False,sandbox=False):
         launch=self.save('launch.json',{'run_id':'capture-run','request_id':'request',

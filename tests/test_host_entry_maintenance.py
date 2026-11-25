@@ -13,10 +13,10 @@ import test_harness_tasks as fixtures
 import test_agent_runtime as runtime_fixtures
 import harness_tasks as tasks
 import harness_hook as hooks
-import harness_maintenance as maintenance
+from task_ledger import maintenance
 import harness_feedback as feedback
 import run_worker
-import harness_discovery as discovery
+from workspace_queries import discovery
 
 
 class HostEntryTests(unittest.TestCase):

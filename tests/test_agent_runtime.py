@@ -15,7 +15,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
 import agent_runtime as runtime
 import codex_adapter
-import claude_adapter
+from native_hosts import claude_adapter
 import collaboration_tools
 import harness_tasks as core
 import production_review as review
@@ -181,7 +181,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(returned[0]['identity_assurance'], 'dispatcher_observed_native_receipt')
 
     def test_codex_executor_receives_review_service_assembly(self):
-        from agent_review import ReviewService
+        from scientific_review.author_tools import ReviewService
         result = self.execute()
         service = self.adapters[0].review_service
         self.assertIsInstance(service, ReviewService)
@@ -211,7 +211,7 @@ class RuntimeTests(unittest.TestCase):
 
         self.factory = FrictionAdapter
         result = self.execute()
-        import harness_maintenance
+        from task_ledger import maintenance as harness_maintenance
         queue = harness_maintenance.queue(self.root)
         self.assertEqual(queue['findings'], [])
         # Recovering the saved native return does not relaunch or duplicate pickup.
@@ -653,6 +653,20 @@ class RuntimeTests(unittest.TestCase):
         return author, package
 
 
+
+    def test_prelaunch_validation_rejection_is_known_only_before_the_native_call(self):
+        from agent_base import native_start_boundary
+        from harness_hosts import NativeStartRejected
+
+        def denied():
+            raise ValueError('The original revision is no longer available')
+        with self.assertRaises(NativeStartRejected) as failure:
+            with native_start_boundary(denied,None):
+                self.fail('A rejected admission reached the native operation')
+        self.assertIn('original revision', failure.exception.observation['reason'])
+        with self.assertRaises(ValueError):
+            with native_start_boundary(lambda:None,None):
+                raise ValueError('Native side may already have acted')
 
     def test_native_spawn_failures_share_exact_not_started_receipts(self):
         for host, adapter in [('codex', 'codex-app-server'), ('claude', 'claude-code-print')]:

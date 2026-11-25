@@ -220,7 +220,7 @@ def project_link(root, row):
 
 
 def discover(root, task_id, *, query=None, limit=10, offset=0):
-    import harness_discovery
+    from workspace_queries import discovery as harness_discovery
     if not 1 <= limit <= 100 or offset < 0:
         raise ValueError('Use limit 1..100 and nonnegative offset.')
     snapshot = core().read_task(root, task_id)

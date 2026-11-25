@@ -22,7 +22,7 @@ import threading
 import time
 import subprocess
 from types import SimpleNamespace
-from agent_review import ReviewService
+from scientific_review.author_tools import ReviewService
 
 
 class AgentAutonomyTests(unittest.TestCase):
@@ -43,13 +43,19 @@ class AgentAutonomyTests(unittest.TestCase):
         self.assertEqual(tasks.read_task(f.root, 'task')['dispositions'], [])
 
     def test_resumed_author_collects_original_review_candidate_without_new_review(self):
-        artifact={'id':'candidate','path':'/original/frozen.json','sha256':'a'*64}
+        f = task_fixtures.TaskCoreTests('runTest')
+        f.setUp()
+        self.addCleanup(f.tearDown)
+        artifact={'id':'candidate', **f.save('frozen-candidate', {'amount': '1'})}
         packet={'artifact_refs':[artifact]}
         opinion={'return_id':'original-review-return','opinion':{'submission':packet,'text':'Original opinion'}}
-        worker=SimpleNamespace(root=Path.cwd())
-        service=ReviewService(worker,{'id':'parent','task_id':'isolated'},{},'resumed-author',Path.cwd(),lambda:None)
-        with patch.object(tasks,'read_request',return_value={'parent_request_id':'parent','task_id':'isolated','independent':True}), \
-             patch.object(run_worker,'_selected_run',return_value={'id':'review-run','outcome':'succeeded'}), \
+        worker=SimpleNamespace(root=f.root)
+        service=ReviewService(worker,{'id':'parent','task_id':'task'},{},'resumed-author',f.root,lambda:None)
+        completed={'id':'review-run','outcome':'succeeded'}
+        with patch.object(tasks,'read_request',return_value={'id':'historical-review','parent_request_id':'parent',
+                          'task_id':'task','independent':True}), \
+             patch.object(run_worker,'_selected_run',return_value=completed), \
+             patch.object(tasks,'read_run',return_value=completed), \
              patch.object(run_worker,'_program_read',return_value={'outcome':'succeeded'}), \
              patch.object(run_worker,'_program_opinion',return_value=opinion), \
              patch.object(service,'record_delivery',return_value={'return_id':'original-review-return'}) as delivered, \
@@ -99,8 +105,10 @@ class AgentAutonomyTests(unittest.TestCase):
 
     def test_dsh_close_terminates_pipe_holding_descendants(self):
         adapter=object.__new__(dsh_headless.DeepSeekAdapter)
-        child="import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(30)"
-        script="import subprocess,sys,time;subprocess.Popen([sys.executable,'-c',sys.argv[1]]);print('ready',flush=True);time.sleep(30)"
+        adapter.process_lock=threading.RLock()
+        adapter.control=None
+        child="import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);print('ready',flush=True);time.sleep(30)"
+        script="import subprocess,sys,time;subprocess.Popen([sys.executable,'-c',sys.argv[1]]);time.sleep(30)"
         adapter.process=subprocess.Popen([sys.executable,'-c',script,child],stdout=subprocess.PIPE,
                                           text=True,start_new_session=True)
         self.addCleanup(adapter.close)

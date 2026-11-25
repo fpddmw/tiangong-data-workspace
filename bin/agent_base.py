@@ -127,15 +127,16 @@ def same_actor(left, right):
 def native_start_boundary(guard, boundary, *, ready_thread=None):
     """Only rejection before the adapter sends or spawns the native action is certain."""
     from harness_hosts import NativeStartRejected
-    from harness_tasks import WorkConflict
-
     with contextlib.ExitStack() as stack:
         try:
             guard()
             stack.enter_context((boundary or contextlib.nullcontext)())
-        except (WorkConflict, RuntimeError) as exc:
-            raise NativeStartRejected(getattr(exc, 'code', 'original_dispatch_guard_rejected'),
-                                      ready_thread=ready_thread) from exc
+        except (ValueError, RuntimeError) as exc:
+            from safe_diagnostics import safe_text
+            rejected = NativeStartRejected(getattr(exc, 'code', 'original_dispatch_guard_rejected'),
+                                           ready_thread=ready_thread)
+            rejected.observation['reason'] = safe_text(str(exc))
+            raise rejected from exc
         yield
 
 

@@ -12,6 +12,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'bin'))
 import agent_runtime as runtime
 import execution_lease as execution
 import harness_tasks as tasks
+from python_executable_fixture import python_executable
 import test_devin_runtime as fixture
 
 REPO=Path(__file__).resolve().parents[1]
@@ -25,18 +26,21 @@ class DevinContinuationTests(unittest.TestCase):
     select_devin=fixture.DevinRuntimeTests.select_devin
     legacy_load_refusal=fixture.DevinRuntimeTests.legacy_load_refusal
 
-    def prepare(self,delay=0):
+    def prepare(self,delay=0,split_catalog=False):
         self.first=self.legacy_load_refusal()
         self.log=self.home/'synthetic-prompts.jsonl'
         native=self.home/'synthetic-acp'
-        native.write_text('#!'+sys.executable+'\n'+'''
+        python_executable(native, '''
 import json,os,sys,time
 from pathlib import Path
 level='high'
 def options():
- return {'configOptions':[{'id':'model','currentValue':'swe-2-high','options':[{'value':'swe-2-high'}]},
-  {'id':'thought_level','currentValue':level,'options':[{'value':'high'},{'value':'max'}]},
-  {'id':'speed','currentValue':'standard','options':[{'value':'standard'}]}]}
+ models=[{'value':'swe-2-high'}]
+ if SPLIT_CATALOG:models.append({'value':'swe-2-medium-lightning'})
+ config=[{'id':'model','currentValue':'swe-2-high','options':models},
+  {'id':'thought_level','currentValue':level,'options':[{'value':'high'},{'value':'max'}]}]
+ if not SPLIT_CATALOG:config.append({'id':'speed','currentValue':'standard','options':[{'value':'standard'}]})
+ return {'configOptions':config}
 def emit(value):print(json.dumps({'jsonrpc':'2.0',**value}),flush=True)
 for line in sys.stdin:
  r=json.loads(line);method=r.get('method');p=r.get('params',{})
@@ -53,8 +57,7 @@ for line in sys.stdin:
   body={'stopReason':'end_turn'}
  else:raise AssertionError(method)
  emit({'id':r['id'],'result':body})
-'''.replace('LOG',repr(str(self.log))).replace('DELAY',repr(delay)))
-        native.chmod(0o700)
+'''.replace('SPLIT_CATALOG',repr(split_catalog)).replace('LOG',repr(str(self.log))).replace('DELAY',repr(delay)))
         config=json.loads(self.config_path.read_bytes())
         config['hosts']['devin']['binary']=str(native)
         config['roles']['executor']['model']='swe-2-max'
@@ -74,7 +77,7 @@ for line in sys.stdin:
         return [json.loads(x) for x in self.log.read_text().splitlines()] if self.log.exists() else []
 
     def test_public_continue_cold_verifies_original_and_selects_same_session_max(self):
-        self.prepare()
+        self.prepare(split_catalog=True)
         old=tasks.read_run(self.root,'rejected')['latest_receipt']
         result=self.cli()
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)

@@ -153,7 +153,7 @@ class Runtime:
                                    expected_plan_revision=plan_revision)
 
     def _launch_ref(self, home, run_id, request_id, session_id, native_cwd=None, *,
-                    native_parent_run_id=None, continuation_ref=None):
+                    native_parent_run_id=None, continuation_ref=None, goal_budget=None):
         """Retain the native directory and any exact requested session."""
         directory = scientific_path(self.root, str(home), must_exist=False)
         directory.mkdir(parents=True, exist_ok=True)
@@ -168,6 +168,8 @@ class Runtime:
             spec['native_cwd'] = native_cwd
         if continuation_ref:
             spec['continuation_ref'] = self.core.evidence_ref(self.root, continuation_ref)
+        if goal_budget:
+            spec['goal_budget']=goal_budget
         raw = (json.dumps(spec, sort_keys=True) + '\n').encode()
         try:
             with output.open('xb') as stream:
@@ -334,6 +336,12 @@ class Runtime:
                 config['recent_timeout_until_ms'] = recent_timeout_deadline(old, prior, config['provider']['dsh_provider'])
         elif operation != 'start':
             raise RuntimeError('Unsupported dispatch operation.')
+        if goal_budget := ((program_context or {}).get('technical_recovery') or {}).get('goal_budget'):
+            if (config['host']['adapter']!='dsh-headless' or role!='executor' or operation!='resume'
+                    or not previous or goal_budget.get('original_run_id')!=previous_run_id
+                    or goal_budget.get('session_id')!=previous['id']):
+                raise RuntimeError('The original authorized budget belongs to another author or Session.')
+            config['goal_budget']=goal_budget
         if config['programmatic'] and not request['independent']:
             from production_review import program_home
             config['program_work_home'] = str(program_home(request, root=self.root) / 'work')
@@ -354,18 +362,37 @@ class Runtime:
         config['native_cwd'] = str(self.root)
         guides = {'global_main': 'global-main', 'task_lead': 'task-lead',
                   'executor': 'data', 'scientific_reviewer': 'reviewer', 'maintainer': 'maintainer'}
-        current_plan = self.core.read_task(self.root, task_id)['task']['plan_ref']
+        from harness_snapshot import current_plan_ref
+        plan_binding = self.core.read_task(self.root, task_id)['task']['plan_ref']
+        current_plan = current_plan_ref(self.root, plan_binding)
         originals = [('工作区入口', self.root / 'AGENTS.md'),
                      ('本职指南', self.root / 'roles' / (guides[role] + '.md')),
-                     ('当前任务计划', Path(current_plan['path'])),
                      ('原请求文件', Path(request['input_ref']['path']))]
+        if current_plan:
+            originals.append(('当前接续页', Path(current_plan['path'])))
+        if operation=='start' and request_id in dispatch_check.get('effective_delegations',{}):
+            originals.append(('有效委派及其父承诺、范围和子终点', Path(check_ref['path'])))
+        try:
+            frozen_plan = self.core.evidence_ref(self.root, plan_binding)
+        except (OSError, ValueError):
+            frozen_plan = None
+        if frozen_plan and frozen_plan != current_plan:
+            originals.append(('冻结承诺', Path(frozen_plan['path'])))
+        if review and review.get('frozen_submission_ref'):
+            originals.append(('本轮冻结候选和原审阅问题', Path(review['frozen_submission_ref']['path'])))
         for key, label in (('parent_brief_ref', '作者原委派'),
                            ('prior_receipt_ref', '上一运行回执（事实记录）')):
             if ref := (program_context or {}).get(key):
                 originals.append((label, self.root / ref['path']))
-        continuation_ref = ((program_context or {}).get('technical_recovery') or {}).get('ref')
+        replacement=(program_context or {}).get('writer_replacement')
+        if replacement:
+            originals.append(('前任 Session 未收到指令的原回执',Path(replacement['receipt']['path'])))
+        recovery = (program_context or {}).get('technical_recovery') or {}
+        continuation_ref = recovery.get('ref')
+        automatic = recovery.get('automatic') is True
         if continuation_ref:
-            originals.append(('本次接续说明（负责人原文）', self.root / continuation_ref['path']))
+            originals.append(('本次故障接续说明' if automatic else '本次接续说明（负责人原文）',
+                              self.root / continuation_ref['path']))
         duties={'global_main':'持续组织原父目标的完整投入、余项和跨包依赖。',
                 'task_lead':'用原生子智能体协助明确制作计划，把制作包交给 worker，持续组织整包交付、成果采用及获准的平台提交。',
                 'executor':('在原Session'+('和原生Goal' if supports(ADAPTER_HOSTS[config['host']['adapter']], 'native_goal') else '')+
@@ -376,6 +403,8 @@ class Runtime:
         text += '\n'.join(label + '：' + str(item) for label, item in originals)
         text += '\n合同、全范围与交接入口：' + str(self.root/'workflows/business-flow/README.md')
         text += '\n卡片是预览，科学判断、采用与授权前读取完整原结论和条件；阶段报告随时可交回，继续可执行余项。'
+        if automatic:
+            text += '\n' + contents.strip()
         if review and (facts := review.get('facts_ref')):
             text += ('\n审阅材料索引 '+facts['path']+'\n先用索引定位本次冻结稿、确切版本、交换和来源，'
                      '以及发起独审时已有的完整读回对照。意见绑定本次冻结稿；科学适用性直接核原稿和来源。')
@@ -401,15 +430,22 @@ class Runtime:
             ('runtime-config-' + digest(raw_config) + '.json'), raw_config))
         if previous_run_id:
             payload['previous_run_id'] = previous_run_id
-        automatic = ((program_context or {}).get('technical_recovery') or {}).get('automatic') is True
+        if replacement:
+            payload['writer_replacement']=replacement
+            payload['input_refs'].append(self.core.evidence_ref(self.root,replacement['receipt']))
         if automatic:
             payload['dsh_auto_continue_from'] = previous_run_id
+            config['automatic_recovery_probe'] = program_context['technical_recovery'].get('probe') is True
         if program_context:
             if recovery := program_context.get('technical_recovery'):
                 payload['input_refs'].append(self.core.evidence_ref(self.root, recovery['ref']))
                 payload['input_refs'].extend(self.core._refs(self.root, recovery['evidence_refs'],
                                                             'Original continuation evidence', False))
+                if recovery.get('ordinary_continuation'):
+                    payload['ordinary_continuation']=recovery['ordinary_continuation']
         payload['input_refs'].extend(package_inputs)
+        if review and review.get('frozen_submission_ref'):
+            payload['input_refs'].append(review['frozen_submission_ref'])
         requested_session_id = None
         if config['host']['adapter'] == 'claude-code-print':
             requested_session_id = previous['id'] if previous else str(uuid.uuid5(uuid.NAMESPACE_URL, str(self.root) + '\n' + request_id + '\n' + run_id))
@@ -419,8 +455,16 @@ class Runtime:
             payload['input_refs'].append(self._launch_ref(evidence_home, run_id, request_id, requested_session_id,
                                                           config.get('native_cwd'),
                                                           native_parent_run_id=native_parent_run_id,
-                                                          continuation_ref=continuation_ref))
+                                                          continuation_ref=continuation_ref,
+                                                          goal_budget=config.get('goal_budget')))
         # This action rejects an existing/uncertain intent before adapter creation.
+        recovery_watch = None
+        if payload['target_host'] == 'deepseek_harness':
+            from dsh_capacity import recovery_managed
+            dsh_provider = config['provider'].get('dsh_provider')
+            if recovery_managed(self.root, dsh_provider):
+                recovery_watch = {'provider':dsh_provider, 'manager':execution_lease.value['manager']}
+                payload['dsh_recovery_watch'] = recovery_watch
         if queued_handoff:
             # An explicitly fenced, never-started transport retains this exact
             # native intent. This does not create/retry a scientific request.
@@ -436,11 +480,18 @@ class Runtime:
         if intent.get('may_launch') is not True:
             raise RuntimeError('Original run intent already exists; read/reconcile the same run, never dispatch again.')
         execution_lease.intent()
-        if config['host']['adapter'] == 'dsh-headless':
-            from dsh_capacity import Capacity
-            config['_dsh_capacity'] = Capacity(self.root, execution_lease,
-                'review' if role == 'scientific_reviewer' else 'author', self.actor,handoff=queued_handoff,
-                provider=config['provider'].get('dsh_provider'))
+        if recovery_watch:
+            from dsh_recovery_host import wake, reattach
+            if queued_handoff:
+                reattach(self.root, self.actor, run_id, recovery_watch)
+            wake(self.root)
+        from dsh_capacity import Capacity, DSH, DEVIN, POOL_NAMES
+        host = intent['target_host']
+        if host in POOL_NAMES:
+            capacity_key = '_dsh_capacity' if host == DSH else '_devin_capacity'
+            config[capacity_key] = Capacity(self.root, execution_lease,
+                'review' if role == 'scientific_reviewer' else 'author', self.actor, handoff=queued_handoff,
+                provider=config['provider'].get('dsh_provider'), host=host)
         dependency_issues = {}
         def remember_input_issues(issues):
             dependency_issues.update((self.core._json(issue), issue) for issue in issues)
@@ -473,9 +524,11 @@ class Runtime:
         review_service = None
         started_at, start = now(), time.monotonic()
         try:
+            if host == DEVIN:
+                execution_lease.stack.enter_context(config['_devin_capacity'].admit(run_guard))
             adapter = self.adapter_factory(self.root, config)
             if supports(ADAPTER_HOSTS[config['host']['adapter']], 'author_review') and role == 'executor':
-                from agent_review import ReviewService
+                from scientific_review.author_tools import ReviewService
                 review_service = ReviewService(self, request, config, run_id, evidence_home, run_guard)
                 adapter.review_service = review_service
             with self.live_lock:
@@ -533,6 +586,8 @@ class Runtime:
                 'config_sha256': config['config_ref']['sha256'], 'observed_at': now(),
                 'runtime_role': config['role'], 'requested_model': config['model'], 'requested_provider': config['provider_id'],
                 'error_type': type(exc).__name__, 'detail': safe_diagnostic(exc), 'outcome': outcome,
+                **({'failure_origin':{'surface':'workspace_ledger','code':exc.sqlite_errorname}}
+                   if self.core.write_contention(exc) else {}),
                 **({'control_stop_run_id': exc.run_id} if isinstance(exc, StopRequested) else {}),
                 **({'observation': exc.observation} if hasattr(exc, 'observation') else {}),
                 **({'native_status': 'not_started'} if rejected else {}),
@@ -650,8 +705,11 @@ class Runtime:
         delivery = (self._registered_delivery(existing_return, result) if existing_return
                     else self._return(run_id, receipt, result))
         observations = self._retain_tool_observations(run_id, receipt, result)
+        effects = self._handoff_effects(run_id,result)
         return {'run_id': run_id, 'outcome': outcome, 'receipt': receipt, 'native_identity': result.get('native_identity'),
                 'management_return': delivery, 'maintenance_observations': observations,
+                **({'delivery_effects':effects} if effects else {}),
+                **({'transport_diagnostic': result['transport_diagnostic']} if result.get('transport_diagnostic') else {}),
                 **({'metering': result['metering']} if result.get('metering') else {}),
                 **({'local_readiness': result['local_readiness']} if 'local_readiness' in result else {}),
                 'scientific_adoption': 'not_inferred'}
@@ -659,7 +717,7 @@ class Runtime:
     def _retain_tool_observations(self, run_id, receipt, result):
         if not result.get('tool_failures') and result.get('native_status') != 'failed':
             return {'status': 'none_observed'}
-        import harness_maintenance
+        from task_ledger import maintenance as harness_maintenance
         try:
             paths = harness_maintenance.retain_runtime_observations(self.root, self.actor, run_id, receipt)
             return {'status': 'retained' if paths else 'already_recorded', 'count': len(paths)}
@@ -671,6 +729,12 @@ class Runtime:
         returned = self.core.read_return(self.root, return_id)
         return {'status': 'registered', 'return_id': returned['id'],
                 'result_ref': returned['result_ref'], 'identity_assurance': returned['identity_assurance']}
+
+    def _handoff_effects(self,run_id,result):
+        from delivery_evidence import read_handoff_effects
+        run=self.core.read_run(self.root,run_id)
+        request=self.core.read_request(self.root,run['request_id'])
+        return read_handoff_effects(self.root,request,run=run,result=result)
 
 
     def _return(self, run_id, receipt, result):
@@ -707,6 +771,13 @@ class Runtime:
         result = value.get('result') if isinstance(value, dict) else None
         rejected=confirmed_not_started(value,host=run['target_host'],run_id=run_id,request_id=run['request_id'],
             config_sha256=run['config_ref']['sha256'],native_identity=run.get('native_identity'))
+        diagnostic = None
+        if run['target_host'] == 'deepseek_harness':
+            from dsh_headless import retained_transport_diagnostic
+            diagnostic = retained_transport_diagnostic(result, run.get('native_identity'))
+        delivery=(self._registered_delivery(run['return_ids'][-1]) if run['return_ids'] else
+                  self._return(run_id,receipt,result) if isinstance(result,dict) else None)
+        effects=self._handoff_effects(run_id,result)
         return {'run_id': run_id, 'outcome': run['outcome'], 'receipt': receipt,
                 **({'execution_state':'not_started','target_session':(value.get('observation') or {}).get('target_session'),
                     'stop_requested':run.get('stop_requested',False),'replay_allowed':False,
@@ -715,11 +786,12 @@ class Runtime:
                 'result': result, 'original_receipt': value, 'native_identity': run.get('native_identity'),
                 'observation': value.get('observation') if isinstance(value, dict) else None,
                 'source': 'retained_original_receipt',
+                **({'transport_diagnostic': diagnostic} if diagnostic else {}),
+                **({'delivery_effects':effects} if effects else {}),
                 'maintenance_observations': self._retain_tool_observations(run_id, receipt, result) if isinstance(result, dict) else None,
-                'management_return': (self._registered_delivery(run['return_ids'][-1]) if run['return_ids']
-                                      else self._return(run_id, receipt, result) if isinstance(result, dict) else None)}
+                'management_return':delivery}
 
-    def _reconcile_acp_start(self,run):
+    def _reconcile_pre_prompt_start(self,run):
         """Append a verified original pre-prompt refusal; never probe by loading."""
         from devin_acp import pre_prompt_rejection
         from execution_lease import observe_run,FileLock
@@ -729,7 +801,7 @@ class Runtime:
             if not target or not parent_id or not run.get('latest_receipt'):return run
             parent=self.core.read_run(self.root,parent_id)
             native=parent.get('native_identity') or {}
-            if (parent['request_id']!=run['request_id'] or parent['target_host']!='devin_cli'
+            if (parent['request_id']!=run['request_id'] or parent['target_host']!=run['target_host']
                     or native.get('id')!=target):return run
             # Serialize with this original request chain. A new observation of
             # an uncertain or still-owned manager cannot certify nonexecution.
@@ -743,37 +815,95 @@ class Runtime:
                 execution=observe_run(self.root,current)
                 if execution['state']!='exited':return current
                 old=read_receipt(self.root,current['latest_receipt'])
-                if (old.get('source')!='adapter_exception' or old.get('error_type')!='ACPError'
-                        or old.get('run_id')!=current['id'] or old.get('request_id')!=current['request_id']
+                if (old.get('source')!='adapter_exception' or old.get('run_id')!=current['id']
+                        or old.get('request_id')!=current['request_id'] or old.get('operation')!=current['operation']
                         or old.get('config_sha256')!=current['config_ref']['sha256']):return current
-                path=scientific_path(self.root,str(Path(launch['evidence_home'])/'runs'/current['id']/'acp.jsonl'))
-                raw=path.read_bytes();rows=[json.loads(line) for line in raw.splitlines() if line.strip()]
-                fact=pre_prompt_rejection(rows,session_id=target)
-                if (not fact or fact['method']!='session/load'
-                        or fact['error']!=(old.get('observation') or {}).get('error')):return current
-                observation={'native_submission':'not_started','category':'acp_request_rejected_before_prompt',
-                    'target_session':target,'acp_request':fact,'prompt_submitted':False,
-                    'verification_source':'original_acp_transcript','transcript_ref':{'path':str(path),'sha256':digest(raw)},
-                    'prior_unknown_receipt':current['latest_receipt'],'execution_observation':execution}
+                observation={'native_submission':'not_started','target_session':target,'prompt_submitted':False,
+                             'prior_unknown_receipt':current['latest_receipt'],'execution_observation':execution}
+                if current['target_host']=='deepseek_harness':
+                    if (old.get('host')!='dsh-headless' or not execution.get('cancelled_before_spawn_event')):
+                        return current
+                    observation.update(category='original_dispatch_guard_rejected',
+                                       verification_source='original_admission_cancelled_before_spawn')
+                    detail='The original manager cancelled its admitted ticket before spawning the native Session.'
+                else:
+                    if old.get('error_type')!='ACPError':return current
+                    path=scientific_path(self.root,str(Path(launch['evidence_home'])/'runs'/current['id']/'acp.jsonl'))
+                    raw=path.read_bytes();rows=[json.loads(line) for line in raw.splitlines() if line.strip()]
+                    fact=pre_prompt_rejection(rows,session_id=target)
+                    if (not fact or fact['method']!='session/load'
+                            or fact['error']!=(old.get('observation') or {}).get('error')):return current
+                    observation.update(category='acp_request_rejected_before_prompt', acp_request=fact,
+                        verification_source='original_acp_transcript',transcript_ref={'path':str(path),'sha256':digest(raw)})
+                    detail='Original session/load returned an exact error response before any session/prompt.'
                 receipt=self._write(launch['evidence_home'],current['id'],{
-                    'schema':OBSERVATION_SCHEMA,'source':'adapter_exception','host':'devin_cli',
+                    'schema':OBSERVATION_SCHEMA,'source':'adapter_exception','host':current['target_host'],
                     'run_id':current['id'],'request_id':current['request_id'],'operation':current['operation'],
                     'config_sha256':current['config_ref']['sha256'],'observed_at':now(),
                     'error_type':'NativeStartRejected','native_status':'not_started','outcome':'failed',
-                    'detail':'Original session/load returned an exact error response before any session/prompt; prior unknown receipt retained.',
-                    'observation':observation})
+                    'detail':detail,'observation':observation})
                 self.core.mutate(self.root,'run-outcome',self.actor,{'id':current['id'],'outcome':'failed',
-                    'receipt':receipt,'summary':'Original ACP request/response and exited transport verify this invocation did not start; target Session ownership remains separate.'})
+                    'receipt':receipt,'summary':detail})
                 return self.core.read_run(self.root,current['id'])
         except (OSError,ValueError,KeyError):
             return run  # Missing/conflicting evidence remains unknown, no replay.
+
+    def _reconcile_devin_setup_exit(self, run):
+        """Read a closed original transport, whose transcript logs intent before sending."""
+        from devin_acp import completed_setup_without_prompt
+        from execution_lease import FileLock, boot_identity, observe_run
+        from harness_package import author_lineage
+        try:
+            request = self.core.read_request(self.root,run['request_id'])
+            with contextlib.closing(self.core._connect(self.root,True)) as c:
+                chain = author_lineage(c,request)[-1]
+            with FileLock(self.root,['request',chain]):
+                current = self.core.read_run(self.root,run['id'])
+                native = current.get('native_identity')
+                if current['outcome'] not in ('running','unknown') or not native or native.get('turn_id'):
+                    return current
+                execution = observe_run(self.root,current)
+                if execution['state']!='exited':
+                    return current
+                launch = self._original_launch(current)
+                home = Path(launch['evidence_home'])/'runs'/current['id']
+                lease = json.loads(scientific_path(self.root,home/'execution.json').read_bytes())
+                boot = boot_identity()
+                if (not boot or (lease.get('manager') or {}).get('boot')!=boot
+                        or (home/'acp-result.json').exists() or any((home/'delivery').glob('operation-*'))):
+                    return current
+                path = scientific_path(self.root,home/'acp.jsonl')
+                raw = path.read_bytes()
+                if not raw.endswith(b'\n'):
+                    return current
+                rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
+                proof = completed_setup_without_prompt(rows,native['id'])
+                if not proof:
+                    return current
+                self.core.recovery_admission(self.root,current['id'],self.actor)
+                detail = 'The original Devin transport exited after ACP setup without submitting a prompt.'
+                receipt = self._write(launch['evidence_home'],current['id'],{
+                    'schema':OBSERVATION_SCHEMA,'source':'adapter_exception','host':current['target_host'],
+                    'run_id':current['id'],'request_id':current['request_id'],'operation':current['operation'],
+                    'config_sha256':current['config_ref']['sha256'],'observed_at':now(),'native_identity':native,
+                    'error_type':'NativeStartRejected','native_status':'not_started','outcome':'failed','detail':detail,
+                    'observation':{**proof,'native_submission':'not_started','phase':'before_prompt',
+                        'category':'acp_transport_exited_before_prompt','execution_observation':execution,
+                        'transcript_ref':{'path':str(path),'sha256':digest(raw)}}})
+                self.core.mutate(self.root,'run-outcome',self.actor,{'id':current['id'],'outcome':'failed',
+                    'receipt':receipt,'summary':detail})
+                return self.core.read_run(self.root,current['id'])
+        except (OSError,ValueError,KeyError,TypeError):
+            return run
 
     def readresult(self, *, run_id, config_path, role, evidence_home):
         run = self.core.read_run(self.root, run_id)
         from delivery_evidence import ingest_run
         archive=ingest_run(self.root,run,self.actor)
-        if run['target_host']=='devin_cli' and run['outcome']=='unknown' and not run['native_identity']:
-            run=self._reconcile_acp_start(run)
+        if run['target_host'] in ('devin_cli','deepseek_harness') and run['outcome']=='unknown' and not run['native_identity']:
+            run=self._reconcile_pre_prompt_start(run)
+        if run['target_host']=='devin_cli' and run['outcome'] in ('running','unknown') and run['native_identity']:
+            run = self._reconcile_devin_setup_exit(run)
         receipt = run.get('latest_receipt')
         if receipt and run['outcome'] in ('succeeded', 'failed', 'stopped'):
             return self._retained_result(run,archive)
@@ -820,7 +950,7 @@ class Runtime:
                 execution = observe_run(self.root, current)
                 if execution['state'] == 'exited' and current['outcome'] not in ('succeeded', 'failed', 'stopped'):
                     result['execution_observation'] = execution
-                    result['transport_status'] = 'interrupted; native turn unresolved'
+                    result.setdefault('transport_status', 'interrupted; native turn unresolved')
                     return self._record_result(run_id, recovery, result, evidence_home, observation_only=True)
                 return {'run_id': run_id, 'outcome': current['outcome'],
                         'receipt': current.get('latest_receipt'), 'result': result,
@@ -847,6 +977,15 @@ class Runtime:
         self.core.recovery_admission(self.root, run_id, self.actor)
         run = self.core.read_run(self.root, run_id)
         if run.get('outcome') in ('succeeded', 'failed', 'stopped'):
+            if run['outcome'] == 'failed' and run['target_host'] == 'deepseek_harness':
+                from dsh_auto_resume import pending_view
+                if pending_view(run):
+                    self.core.mutate(self.root, 'run-stop', self.actor, {'id':run_id, 'summary':reason or
+                        'Original dispatcher stopped the pending DSH recovery.'})
+                    from dsh_recovery_host import wake
+                    wake(self.root)
+                    return {'run_id':run_id, 'outcome':'failed', 'stop_requested':True,
+                            'stop_confirmed':False, 'native_terminal':True}
             return {'run_id': run_id, 'outcome': run['outcome'], 'stop_requested': run['stop_requested'],
                     'stop_confirmed': run['outcome'] == 'stopped', 'native_terminal': True,
                     'reason': 'Original native turn has a retained terminal receipt.'}

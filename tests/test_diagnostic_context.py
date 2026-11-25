@@ -1,7 +1,7 @@
 """Business bodies remain whole; diagnostic-only transport payloads stay omitted."""
 import json
-import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -41,18 +41,17 @@ class DiagnosticContextTests(unittest.TestCase):
         self.assertNotIn('fixture-private-response', text)
         self.assertIn('A complete safe root cause', text)
 
-    def test_installed_js_runtime_uses_the_same_context_boundary(self):
-        binary = Path('/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness')
-        if not binary.exists():
-            self.skipTest('Installed DSH Electron Node is not available')
+    def test_js_runtime_uses_the_same_context_boundary(self):
+        binary = shutil.which('node')
+        if not binary:
+            self.skipTest('Requires Node.js to run the JavaScript diagnostic test')
         module = (ROOT / 'bin/safe_diagnostics.mjs').as_uri()
         source = ('import {safeValue,safeError} from ' + json.dumps(module) + ';'
                   'console.log(JSON.stringify({'
                   'business:safeValue({contract:{body:{purpose:"完整用途及限制"}},accessToken:"fixture-camel-secret"}),'
                   'error:safeError({message:"authorization denied",details:{body:"fixture-private-response",attempt:2}})'
                   '}));')
-        result = subprocess.run([str(binary), '--input-type=module', '-e', source],
-                                env={**os.environ, 'ELECTRON_RUN_AS_NODE': '1'},
+        result = subprocess.run([binary, '--input-type=module', '-e', source],
                                 text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         value = json.loads(result.stdout)

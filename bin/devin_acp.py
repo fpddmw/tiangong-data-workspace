@@ -63,6 +63,40 @@ def pre_prompt_rejection(rows, *, session_id=None):
         'prompt_submitted':False,'client_tool_requests':0,'replayed_notifications':replayed}
 
 
+def completed_setup_without_prompt(rows, session_id):
+    """Verify a complete ACP setup for the exact session, before any prompt intent."""
+    requests = {}
+    responses = {}
+    allowed = {'initialize','session/new','session/load','session/set_config_option','session/set_mode'}
+    for row in rows:
+        if row.get('transport_error'):
+            return None
+        key = row.get('id')
+        method = row.get('method')
+        if row.get('direction') == 'client':
+            if method not in allowed or key != len(requests)+1:
+                return None
+            requests[key] = row
+        elif row.get('direction') == 'agent' and key is not None:
+            if (method or key not in requests or key in responses or row.get('jsonrpc')!='2.0'
+                    or row.get('request_method')!=requests[key]['method'] or not isinstance(row.get('result'),dict)):
+                return None
+            responses[key] = row['result']
+    if not requests or requests.keys()!=responses.keys() or requests[1]['method']!='initialize':
+        return None
+    setups = [key for key,row in requests.items() if row['method'] in ('session/new','session/load')]
+    if setups!=[2] or responses[1].get('protocolVersion')!=1:
+        return None
+    setup = requests[2]
+    bound = responses[2] if setup['method']=='session/new' else setup.get('params',{})
+    if bound.get('sessionId')!=session_id:
+        return None
+    if any(row.get('params',{}).get('sessionId')!=session_id for key,row in requests.items() if key>2):
+        return None
+    return {'target_session':session_id,'last_setup_request':requests[len(requests)]['method'],
+            'prompt_submitted':False,'client_tool_requests':0}
+
+
 class ACPHost:
     def __init__(self, command, *, cwd, env, on_event, on_request, lease=None, transcript=None):
         self.pending, self.serial = {}, 0
@@ -82,10 +116,13 @@ class ACPHost:
         self.watcher = threading.Thread(target=self._watch_exit, daemon=True)
         self.watcher.start()
 
-    def retain(self, value):
+    def retain(self, value, *, durable=False):
         if self.transcript:
             with self.lock, Path(self.transcript).open('a') as output:
                 output.write(json.dumps(safe_value(value), ensure_ascii=False) + '\n')
+                if durable:
+                    output.flush()
+                    os.fsync(output.fileno())
 
     def send(self, value):
         with self.write_lock:
@@ -101,7 +138,8 @@ class ACPHost:
             key = self.serial
             reply = queue.Queue(maxsize=1)
             self.pending[key] = {'method':method,'reply':reply}
-        self.retain({'direction': 'client', 'id': key, 'method': method, 'params': params})
+        self.retain({'direction': 'client', 'id': key, 'method': method, 'params': params},
+                    durable=method=='session/prompt')
         self.send({'id': key, 'method': method, 'params': params})
         return key, reply
 

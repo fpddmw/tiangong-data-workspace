@@ -56,14 +56,20 @@ class CapacityTests(unittest.TestCase):
         for process in self.native_handles:
             process.wait(timeout=5)
 
-    def seed(self, kind='author', *, task_id='task'):
+    def seed(self, kind='author', *, task_id='task', host=capacity.DSH):
         self.number += 1
         run_id, request_id = 'capacity-run-' + str(self.number), 'capacity-request-' + str(self.number)
         if task_id != 'task':
             tasks.mutate(self.root, 'create', self.actor, {'id': task_id, 'owner_actor': self.actor,
                 'original_ref': self.evidence, 'plan_ref': self.evidence, 'summary': 'Other isolated package', 'required_scope': []})
-        self.create_request(id=request_id, task_id=task_id, required_scope=[],
-            **({'kind': 'review', 'independent': True, 'parent_request_id': 'request'} if kind == 'review' else {}))
+        review = {}
+        if kind == 'review':
+            # Queue load uses separate scientific units. The three-round
+            # autonomy budget is tested against one unit in test_wave_delivery.
+            parent = 'capacity-subject-' + str(self.number)
+            self.create_request(id=parent,task_id=task_id,required_scope=[])
+            review = {'kind':'review','independent':True,'parent_request_id':parent}
+        self.create_request(id=request_id, task_id=task_id, required_scope=[], **review)
         home = self.root / 'work' / run_id
         home.mkdir(parents=True)
         launch = home / 'launch.json'
@@ -71,11 +77,30 @@ class CapacityTests(unittest.TestCase):
                                      'native_cwd': str(self.root), 'work_home': str(home)}))
         tasks.mutate(self.root, 'run-intent', self.actor, {'id': run_id, 'request_id': request_id,
             'config_ref': self.ref(self.config_path), 'input_refs': [self.input_ref, self.ref(launch)],
-            'target_host': 'deepseek_harness', 'operation': 'start'})
+            'target_host': host, 'operation': 'start'})
         return run_id, request_id, home
 
-    def start(self, kind='author', *, ready=True, mode='manager', task_id='task'):
-        run_id, request_id, home = self.seed(kind, task_id=task_id)
+    def test_busy_capacity_flush_preserves_original_transition_and_can_be_replayed(self):
+        run_id,_,_=self.seed()
+        queue_path=capacity._paths(self.root)[0]
+        event={'id':run_id,'kind':'author','phase':'admitted','sequence':5,'queue_source':str(queue_path)}
+        with tasks.transaction(self.root):
+            started=time.monotonic()
+            capacity.record_capacity(self.root,self.actor,event)
+            self.assertLess(time.monotonic()-started,1)
+            pending,=capacity._accounting_home(self.root,capacity.DSH).glob('*.json')
+            fact=json.loads(pending.read_text())
+            self.assertFalse(any(e['kind']=='capacity' for e in tasks.read_run(self.root,run_id)['events']))
+        self.assertTrue(capacity.flush_accounting(self.root))
+        self.assertFalse(pending.exists())
+        execution_lease.atomic_json(pending,fact)
+        self.assertTrue(capacity.flush_accounting(self.root))
+        logged,=[e for e in tasks.read_run(self.root,run_id)['events'] if e['kind']=='capacity']
+        self.assertEqual(logged['created_at'],fact['at'])
+        self.assertEqual(logged['payload']['phase'],'admitted')
+
+    def start(self, kind='author', *, ready=True, mode='manager', task_id='task', host=capacity.DSH):
+        run_id, request_id, home = self.seed(kind, task_id=task_id, host=host)
         error = (self.root / (run_id + '.stderr')).open('w')
         process = subprocess.Popen([sys.executable, str(DRIVER), mode, str(self.root), run_id, kind, request_id],
             env=os.environ.copy(), stdout=subprocess.DEVNULL, stderr=error)
@@ -133,6 +158,25 @@ class CapacityTests(unittest.TestCase):
         self.assertTrue(provider_pilot(self.root,authority,dry_run=True)['eligible'])
         provider_pilot(self.root,authority)
         self.assertNotIn('provider_pilot',self.view())
+
+    def test_eight_seat_provider_limit_and_eligible_fifo(self):
+        policy=capacity.EIGHT_SEAT_POLICY
+        provider='tiangong-cluster'
+        def ticket(kind,sequence):
+            return {'kind':kind,'sequence':sequence,'phase':'queued','provider':provider,
+                    'admission_policy':policy,'run_id':str(sequence)}
+        def reason(authors,reviews,kind,earlier=()):
+            active=[{'kind':role,'provider':provider}
+                    for role,count in [('author',authors),('review',reviews)] for _ in range(count)]
+            entry=ticket(kind,9)
+            queue={'policy':policy,'pilot_provider':provider,'entries':[*earlier,entry]}
+            return capacity._waiting_reason(entry,capacity._pilot_counts(active,provider),queue,{},active)
+        for authors,reviews in ((5,3),(4,4),(3,5)):
+            self.assertEqual(reason(authors,reviews,'review'),'provider_total_capacity')
+        self.assertEqual(reason(5,0,'author'),'author_capacity')
+        self.assertEqual(reason(0,5,'review'),'review_capacity')
+        self.assertIsNone(reason(5,2,'review',[ticket('author',1)]))
+        self.assertEqual(reason(4,2,'review',[ticket('author',1)]),'earlier_eligible_provider_request')
 
     def test_six_worker_and_six_review_seats_across_packages_and_public_query(self):
         held=[self.start(kind,task_id='other-package' if i==3 else 'task')
@@ -278,7 +322,7 @@ class CapacityTests(unittest.TestCase):
 
     def test_queued_original_run_is_readable_before_native_identity_and_on_resume(self):
         from agent_runtime import Runtime
-        from agent_review import ReviewService
+        from scientific_review.author_tools import ReviewService
         import run_worker
         held=[self.start('review') for _ in range(6)]
         pending,_,home=self.start('review',ready=False)
@@ -380,6 +424,26 @@ class CapacityTests(unittest.TestCase):
             lease.settled()
         self.assertEqual(self.view()['counts']['occupied']['total'], 0)
 
+    def test_capacity_rejects_reused_groups_and_rechecks_a_child_missing_from_the_os_sample(self):
+        run_id, request_id, home = self.seed('review')
+        manager = {'pid':401,'pgid':401,'ppid':1,'start':'Wed Nov 18 01:00:00 2026','boot':'same-boot'}
+        child = {'pid':402,'pgid':402,'ppid':401,'start':'Wed Nov 18 01:01:00 2026','boot':'same-boot'}
+        path = execution_lease.metadata_path(home, run_id)
+        path.parent.mkdir(parents=True)
+        metadata = {'run_id':run_id, 'request_id':request_id, 'child':child, 'manager':manager, 'phase':'settled'}
+        execution_lease.atomic_json(path, metadata)
+        replacement = {**child, 'ppid':1, 'start':'Wed Nov 18 01:02:00 2026'}
+        with patch.object(execution_lease, 'boot_identity', return_value='same-boot'), \
+             patch.object(execution_lease, '_process_markers', return_value={}), \
+             patch.object(capacity, '_processes', return_value={402:replacement}):
+            self.assertEqual(self.view()['counts']['occupied']['review'], 0)
+        execution_lease.atomic_json(path, {**metadata, 'phase':'spawned'})
+        with patch.object(execution_lease, 'boot_identity', return_value='same-boot'), \
+             patch.object(execution_lease, '_process_markers', return_value={}), \
+             patch.object(capacity, '_processes', return_value={401:manager}), \
+             patch.object(execution_lease, 'original_group', return_value={'state':'active'}) as observe:
+            self.assertEqual(self.view()['counts']['occupied']['review'], 1)
+            observe.assert_called_once_with(child)
     def test_original_native_writer_counts_without_manager_metadata_or_terminal(self):
         config=json.loads(self.config_path.read_text())
         config['hosts']['dsh']={'adapter':'dsh-headless','dsh_home':str(self.home)}

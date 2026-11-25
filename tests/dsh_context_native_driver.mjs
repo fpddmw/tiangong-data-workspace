@@ -6,7 +6,7 @@ import {pathToFileURL} from 'node:url'
 import {randomUUID} from 'node:crypto'
 import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
-import {apply as taskContext} from '../bin/dsh_context.mjs'
+import {apply as taskContext} from '../bin/dsh/context.mjs'
 const execute=promisify(execFile)
 const emit=value=>console.log(JSON.stringify(value))
 

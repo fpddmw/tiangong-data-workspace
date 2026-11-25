@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 import context
-import harness_decisions as decisions
+from task_ledger import decisions
 import harness_tasks as tasks
 import test_harness_tasks as fixtures
 

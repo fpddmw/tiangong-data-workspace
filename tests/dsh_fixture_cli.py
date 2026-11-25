@@ -33,7 +33,8 @@ def main(argv):
             'streamIdleTimeoutMs': state.get('wire_idle_timeout_ms', 300_000),
             'retryPolicy': {'mode': 'normal', 'maxRetries': state.get('wire_retries', 0),
                             'retryableCodes': ['TIMEOUT'],
-                            'backoff': {'initialDelayMs': 10, 'maxDelayMs': 10,
+                            'backoff': {'initialDelayMs': state.get('wire_retry_delay_ms', 10),
+                                        'maxDelayMs': state.get('wire_retry_delay_ms', 10),
                                         'jitterRatio': 0}}}}}})
     else:
         entries.append({'insert': [{'id': 'offline-model', 'name': state['provider'],

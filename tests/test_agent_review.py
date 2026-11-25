@@ -1,10 +1,13 @@
 """Durable review observation and bounded waits, independent of author lifetime."""
 from types import SimpleNamespace
 import contextlib
+import json
+from pathlib import Path
+import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
-from agent_review import ReviewService
+from scientific_review.author_tools import ReviewService
 from agent_runtime import StopRequested
 
 class ReviewWaitingTests(unittest.TestCase):
@@ -19,24 +22,31 @@ class ReviewWaitingTests(unittest.TestCase):
         request.start(); self.addCleanup(request.stop)
         # Unit fixtures have no ledger; queue withdrawal itself is covered
         # against an actual ledger by test_review_revision.
-        for name, value in [('harness_tasks._connect', Mock()), ('review_queue._links', None),
-                            ('review_queue.withheld', None)]:
+        for name, value in [('harness_tasks._connect', Mock()), ('scientific_review.queue._links', None),
+                            ('scientific_review.queue.withheld', None), ('run_worker._direct_return_id', None)]:
             lookup = patch(name, return_value=value)
             lookup.start(); self.addCleanup(lookup.stop)
         reader = patch('run_worker._program_read')
         self.reader = reader.start(); self.addCleanup(reader.stop)
+        read_run = patch('harness_tasks.read_run')
+        self.read_run = read_run.start(); self.addCleanup(read_run.stop)
     def test_default_is_immediate_and_reconciles_original_native(self):
-        run={'id':'run','outcome':'running','updated_at':'original-activity'}
-        with patch('run_worker._selected_run',return_value=run):
+        run={'id':'run','outcome':'running','updated_at':'original-receipt-time'}
+        self.read_run.return_value=run
+        activity={'at':'newer-tool-start','source':'original_tool_spawn'}
+        with patch('run_worker._selected_run',return_value=run), patch('execution_lease.tool_activity',return_value=activity):
             value=self.service.result({'review_id':'review'})
         self.assertEqual(value['state'],'running')
-        self.assertEqual(value['last_activity'],'original-activity')
+        self.assertEqual(value['run_updated_at'],'original-receipt-time')
+        self.assertEqual(value['last_tool_activity'],activity)
+        self.read_run.assert_called_once_with('/fixture','run')
         self.assertEqual(self.reader.call_count,1)
         self.service.cancelled.wait.assert_not_called()
     def test_explicit_wait_collects_reconciled_result(self):
         running={'id':'run','outcome':'running'};done={'id':'run','outcome':'succeeded'}
         opinion={'return_id':'original-return','opinion':{'text':'Fix denominator','submission':{'artifact_refs':[]}}}
-        with patch('run_worker._selected_run',side_effect=[running,running,done,done]),patch('run_worker._program_opinion',return_value=opinion):
+        self.read_run.side_effect=[running,done]
+        with patch('run_worker._selected_run',side_effect=[running,done]),patch('run_worker._program_opinion',return_value=opinion):
             value=self.service.result({'review_id':'review','wait_seconds':10})
         self.assertEqual(value['return_id'],'original-return')
         self.service.record_delivery.assert_called_once_with('review',opinion)
@@ -44,6 +54,7 @@ class ReviewWaitingTests(unittest.TestCase):
 
     def test_unindexed_original_final_remains_readable_without_false_delivery_record(self):
         done={'id':'run','outcome':'succeeded'}
+        self.read_run.return_value=done
         opinion={'return_id':None,'opinion':{'text':'Complete original opinion before indexing.',
             'submission':{'artifact_refs':[]}}}
         with patch('run_worker._selected_run',return_value=done),patch('run_worker._program_opinion',return_value=opinion):
@@ -66,7 +77,8 @@ class ReviewWaitingTests(unittest.TestCase):
         running={'id':'run','outcome':'running'};done={'id':'run','outcome':'succeeded'}
         opinion={'return_id':'original-return','opinion':{'text':'Fix denominator','submission':{'artifact_refs':[]}}}
         self.service.record_delivery.side_effect=lambda *args:order.append('full_delivery')
-        with patch('run_worker._selected_run',side_effect=[running,running,done,done]),patch('run_worker._program_opinion',return_value=opinion),ThreadPoolExecutor(max_workers=1) as pool:
+        self.read_run.side_effect=[running,done]
+        with patch('run_worker._selected_run',side_effect=[running,done]),patch('run_worker._program_opinion',return_value=opinion),ThreadPoolExecutor(max_workers=1) as pool:
             result=pool.submit(self.service.result,{'review_id':'review','wait_seconds':10})
             try:
                 self.assertTrue(reacquiring.wait(3))
@@ -84,10 +96,44 @@ class ReviewWaitingTests(unittest.TestCase):
         for invalid in (-1,601,float('inf'),float('nan'),True,'60'):
             with self.subTest(invalid=invalid),self.assertRaises(ValueError):
                 self.service.result({'review_id':'review','wait_seconds':invalid})
-        with patch('run_worker._selected_run',return_value={'id':'run','outcome':'failed'}):
-            self.assertEqual(self.service.result({'review_id':'review','wait_seconds':600})['state'],'failed')
+        receipt = {'path':'original-failure'}
+        failed = {'id':'run','outcome':'failed','latest_receipt':receipt, 'target_host':'deepseek_harness'}
+        self.read_run.return_value=failed
+        self.reader.return_value={'receipt':receipt,'result':{'result':'Partial stream text.', 'native_error':{
+            'code':'PI_AI_ERROR', 'message':'Error reading response: malformed server-sent event JSON.'}}}
+        with patch('run_worker._selected_run',return_value=failed):
+            result=self.service.result({'review_id':'review','wait_seconds':600})
+        self.assertEqual(result['state'],'failed')
+        self.assertIsNone(result['last_tool_activity'])
+        self.assertEqual(result['transport_diagnostic']['kind'],'sse_json_decode')
+        self.assertEqual(result['transport_diagnostic']['phase'],'unobserved')
+        self.assertNotIn('opinion',result)
+        self.assertFalse(result['replay_allowed'])
         with patch('run_worker._selected_run',return_value=None):
             self.assertEqual(self.service.result({'review_id':'review'})['state'],'not_started_or_launch_unresolved')
+    def test_wait_reports_exited_launcher_but_preserves_live_and_unobserved_launches(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp) / 'reviews' / 'review'
+            home.mkdir(parents=True)
+            launch = home / 'launch.json'
+            request = {'id':'review', 'parent_request_id':'author','task_id':'task','independent': True,
+                       'input_ref':{'path':str(home / 'packet.json')}}
+            launch.write_text(json.dumps({'review_request':'review','parent_request':'author',
+                                         'phase':'spawned','child':{'pid':123}}))
+            with (patch('harness_tasks.read_request', return_value=request),
+                  patch('run_worker._selected_run',return_value=None),
+                  patch('execution_lease.matches') as matches):
+                for observation in (True, None):
+                    matches.return_value = observation
+                    self.assertEqual(self.service.result({'review_id':'review'})['state'],
+                                     'not_started_or_launch_unresolved')
+                matches.return_value = False
+                result = self.service.result({'review_id':'review','wait_seconds':600})
+                self.assertEqual(result['state'],'launcher_exited_before_run')
+                self.assertEqual(result['launch_path'],str(launch))
+                self.assertFalse(result['replay_allowed'])
+                self.service.cancelled.wait.assert_not_called()
+
     def test_close_never_joins_children(self):
         child=Mock();self.service.jobs={'review':{'thread':child}}
         self.service.close();self.service.wait()
@@ -105,13 +151,38 @@ class ReviewWaitingTests(unittest.TestCase):
 
     def test_queue_observation_reaches_author_without_claiming_native_start(self):
         run={'id':'run','outcome':'intent'}
+        self.read_run.return_value=run
         self.reader.return_value={'run_id':'run','outcome':'intent','execution_state':'queued',
             'capacity':{'waiting_reason':'workspace_total_capacity'},'replay_allowed':False}
         with patch('run_worker._selected_run',return_value=run):
             value=self.service.result({'review_id':'review'})
         self.assertEqual(value['state'],'queued')
         self.assertEqual(value['capacity']['waiting_reason'],'workspace_total_capacity')
+        self.assertIsNone(value['last_tool_activity'])
         self.assertFalse(value['replay_allowed'])
+
+    def test_tool_activity_is_bound_to_the_original_execution_and_turn(self):
+        from execution_lease import metadata_path, tool_activity
+        with tempfile.TemporaryDirectory() as binding:
+            native={'host':'deepseek_harness','kind':'session','id':'session','turn_id':'1'}
+            run={'id':'run','request_id':'review','native_identity':native}
+            path=metadata_path(binding,'run')
+            path.parent.mkdir(parents=True)
+            tools={'legacy':{'phase':'spawned','process':{'start':'Fri Nov 20 16:19:53 2026'}},
+                   'intent':{'phase':'launch_intent','started_at':'2026-11-21T05:00:00+00:00'}}
+            record={'run_id':'run','request_id':'review','native_identity':native,'tools':tools}
+            path.write_text(json.dumps(record))
+            with patch('harness_package.launch_spec',return_value={'evidence_home':binding}):
+                self.assertEqual(tool_activity(binding,run),{'at':'Fri Nov 20 16:19:53 2026',
+                    'source':'original_tool_os_start','clock':'original_host_local_time'})
+                tools['utc']={'phase':'spawned','started_at':'2026-11-21T00:44:05+00:00'}
+                path.write_text(json.dumps(record))
+                self.assertEqual(tool_activity(binding,run),{'at':'2026-11-21T00:44:05+00:00',
+                    'source':'original_tool_spawn'})
+                self.assertIsNone(tool_activity(binding,{**run,'native_identity':{**native,'turn_id':'2'}}))
+                self.assertIsNone(tool_activity(binding,{**run,'request_id':'other-review'}))
+                path.unlink()
+                self.assertIsNone(tool_activity(binding,run))
 
 
 class LiveReviewScopeTests(unittest.TestCase):

@@ -122,7 +122,7 @@ for(const load of [async()=>{throw new Error('Missing optional module')},async()
 }
 console.log('Original text survives optional Goal module and projection failures.')
 
-const {invocationObservation}=await import('../bin/dsh_runner.mjs')
+const {invocationObservation}=await import('../bin/dsh/runner.mjs')
 const handlers2=new Map(), output=[]
 const session2={id:'metering-unavailable',header:{cwd:'/workspace'}}
 const observation=invocationObservation({on(name,fn){handlers2.set(name,fn);return()=>handlers2.delete(name)}},

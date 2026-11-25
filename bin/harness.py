@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import harness_tasks as tasks
-import harness_decisions as decisions
+from task_ledger import decisions
 
 ROOT = Path(__file__).resolve().parent.parent
 HISTORY_TABLES = ('handoffs', 'handoff_executors', 'engineering_routes', 'engineering_executors')
@@ -18,6 +18,11 @@ def task_command(root, args):
     action = args.command.removeprefix('work-')
     if action == 'capacity':
         import dsh_capacity
+        if args.host == 'devin':
+            if args.provider_pilot is not None or any((args.end_provider_pilot, args.adopt_policy,
+                    args.retire_exited_waits, args.source, args.dry_run)):
+                raise ValueError('Select the DSH pool for DSH queue maintenance actions.')
+            return dsh_capacity.snapshot(root, dsh_capacity.DEVIN)
         if args.provider_pilot is not None or args.end_provider_pilot:
             if not args.source:raise ValueError('Capacity maintenance requires the original --source')
             from dsh_capacity_handoff import provider_pilot
@@ -37,7 +42,11 @@ def task_command(root, args):
         return harness_scope.check(root,kind,ident,args.for_action,summary=args.summary)
     if action == 'review-record':
         import harness_scope
-        return harness_scope.review_record(root,tasks.verified_actor(root),args.return_id,args.conclusion,args.basis,supersedes=args.supersedes)
+        return harness_scope.review_record(root,tasks.verified_actor(root),args.return_id,args.conclusion,args.basis,
+                                           supersedes=args.supersedes,recurs_after=args.recurs_after)
+    if action == 'submit-batch':
+        from platform_review.submission import submit
+        return submit(root,args.task,args.input,adoption=args.adoption,request=args.request,use=args.use,execute=args.execute)
     if action == 'scope':
         import harness_scope
         if args.dry_run and not args.apply:raise ValueError('--dry-run requires --apply FILE.')
@@ -67,7 +76,7 @@ def task_command(root, args):
         elif args.offset:raise ValueError('--offset requires an explicit --limit for package pages.')
         return result
     if action in ('whoami', 'assignments', 'enroll', 'accept', 'dispatch'):
-        import harness_sessions
+        from task_ledger import sessions as harness_sessions
         actor = tasks.verified_actor(root)
         if action in ('whoami', 'assignments'):
             return harness_sessions.overview(root, actor, limit=args.limit, offset=args.offset,
@@ -78,9 +87,10 @@ def task_command(root, args):
             return harness_sessions.accept(root, actor, args.request, task_id=args.task)
         return harness_sessions.dispatch(root, actor, args.request, task_id=args.task, config=args.config,
                                          execute=args.execute, instructions=args.instructions, run_id=args.run_id,
-                                         resume_stopped=args.resume_stopped, continue_original=args.continue_original)
+                                         resume_stopped=args.resume_stopped, continue_original=args.continue_original,
+                                         goal_max_rounds=args.goal_max_rounds,basis=args.basis)
     if action in ('maintenance', 'maintenance-delegate', 'claim-finding', 'finding'):
-        import harness_maintenance
+        from task_ledger import maintenance as harness_maintenance
         if action == 'maintenance':
             return harness_maintenance.queue(root, limit=args.limit, offset=args.offset)
         actor = tasks.verified_actor(root)
@@ -93,57 +103,122 @@ def task_command(root, args):
         return tasks.current_view(root, tasks.verified_actor(root) if args.mine else None,
                             limit=args.limit, offset=args.offset, include_closed=args.all)
     if action == 'show':
+        if args.wait_seconds is not None or args.after is not None or args.mine or len(args.id or ()) > 1:
+            import harness_wave
+            if args.detail or args.history or args.wave or args.scope:
+                raise ValueError('Waiting uses the current responsibility view.')
+            return harness_wave.wait(root, args.id or (), args.after, args.wait_seconds or 0, mine=args.mine,
+                                     limit=args.limit, offset=args.offset)
+        if not args.id:
+            raise ValueError('Select --id TASK or --mine.')
+        ident, = args.id
+        import harness_snapshot
         try:
-            if args.detail:return tasks.read_task(root,args.id)
-            import harness_snapshot
-            return harness_snapshot.read(root,task_id=args.id,limit=args.limit,offset=args.offset)['work']
+            if args.detail:return tasks.read_task(root,ident)
+            return harness_snapshot.read(root,task_id=ident,limit=args.limit,offset=args.offset,
+                                         history=args.history,wave=args.wave,scope_id=args.scope)['work']
         except tasks.WorkConflict as missing_task:
             if missing_task.code != 'not_found':
                 raise
+            if args.scope is not None:
+                raise
+            if not args.detail and not args.history and not args.wave:
+                try:
+                    return harness_snapshot.read(root,request_id=ident,limit=args.limit,offset=args.offset)['work']
+                except tasks.WorkConflict as missing_request:
+                    if missing_request.code!='not_found':
+                        raise
             try:
-                run = tasks.read_run(root, args.id)
+                run = tasks.read_run(root, ident)
             except tasks.WorkConflict as missing_run:
                 if missing_run.code != 'not_found':
                     raise
                 raise missing_task from None
-        return run if args.detail else {key: run[key] for key in ('id', 'request_id', 'input_bindings', 'execution_basis')
-                                        if key in run}
+        with contextlib.closing(tasks._connect(root,True)) as c:
+            request = tasks._row(c,'work_requests',run['request_id'])
+            run['commitment'] = harness_snapshot.commitment(c,root,request['task_id'],run['plan_revision'])
+        if args.detail:
+            return run
+        return {key:run[key] for key in ('id','request_id','input_refs','config_ref','plan_revision','commitment',
+                                       'input_bindings','execution_basis') if key in run}
     actor = tasks.verified_actor(root)
+    if action=='wait':
+        import harness_wave
+        return harness_wave.defer(root,args.task,args.item,until=args.until,request=args.for_request,
+                                  path=args.for_file,reason=args.reason,external=args.external)
+    if action=='wave':
+        import harness_wave
+        return harness_wave.bookmark(root,args.task,args.decision)
     if action == 'create' and args.brief:
-        import harness_sessions
+        from task_ledger import sessions as harness_sessions
         return harness_sessions.create(root, actor, args.brief, args.owner, task_id=args.id,contract_path=args.contract)
     if action == 'request' and args.brief:
         if not args.task:
             raise ValueError('Normal assignment requires the original --task')
-        import harness_sessions
-        return harness_sessions.request(root, actor, args.task, args.brief, review_of=args.review_of,contract_path=args.contract,scope_ids=args.scope)
+        from task_ledger import sessions as harness_sessions
+        return harness_sessions.request(root, actor, args.task, args.brief, review_of=args.review_of,
+                                        contract_path=args.contract,scope_ids=args.scope,continues=args.continues)
     if action in ('revise','reopen','pause','resume','cancel','complete','transfer') and args.note:
         if not args.task:
             raise ValueError('Select the original --task for this decision.')
-        import harness_sessions
+        from task_ledger import sessions as harness_sessions
         task = tasks._read_one(root,'work_tasks',args.task)
-        ref = harness_sessions.reference(root,args.note)
-        ident = 'task-action:'+hashlib.sha256(tasks._json([action,args.task,ref]).encode()).hexdigest()
+        note = harness_sessions.reference(root,args.note)
+        ref=note
+        contract_body=None
+        if action=='revise':
+            ref=(harness_sessions.reference(root,args.reason_file) if args.reason_file else
+                 tasks.save_note(root,Path(task['plan_ref']['path']).parent,'revision-reason',args.reason))
+        key = [action,args.task,ref['sha256'] if action=='revise' else ref]
+        if action == 'revise':
+            if len(args.base_sha256) != 64 or any(ch not in '0123456789abcdef' for ch in args.base_sha256):
+                raise ValueError('Use the SHA-256 of the accepted commitment returned by work-show.')
+            key.extend((args.base_sha256, note['sha256'],sorted(args.affected_scope),sorted(args.affected_request)))
+            if args.contract:
+                import harness_scope
+                contract_ref = harness_sessions.reference(root,args.contract)
+                contract_body=harness_scope.validate_contract(root,json.loads(Path(contract_ref['path']).read_bytes()))
+                key.append(contract_body)
+        ident = 'task-action:'+hashlib.sha256(tasks._json(key).encode()).hexdigest()
         with contextlib.closing(tasks._connect(root,True)) as c:
             prior = c.execute("SELECT actor_json,payload_json FROM work_task_events WHERE task_id=? AND kind=? AND json_extract(payload_json,'$.id')=?", (args.task,action,ident)).fetchone() if action!='complete' else None
-            if prior and json.loads(prior['actor_json']) == actor:
+            if action=='revise' and not prior:
+                # Preserve readback of the old path-keyed revision receipts.
+                for event in c.execute("SELECT actor_json,payload_json FROM work_task_events WHERE task_id=? AND kind='revise' ORDER BY id DESC",(args.task,)):
+                    saved=json.loads(event['payload_json']).get('action_payload',{})
+                    if (saved.get('base_sha256')==args.base_sha256
+                            and saved.get('plan_ref',{}).get('sha256')==note['sha256']
+                            and saved.get('evidence_ref',{}).get('sha256')==ref['sha256']
+                            and sorted(saved.get('affected_scope',[]))==sorted(args.affected_scope)
+                            and sorted(saved.get('affected_request_ids',[]))==sorted(args.affected_request)
+                            and saved.get('delivery_contract')==contract_body):
+                        prior=event
+                        break
+            if prior and tasks.native_key(prior['actor_json']) == tasks.native_key(actor):
                 return json.loads(prior['payload_json'])['result']
         payload = {'id':ident,
                    'task_id':args.task,'expected_task_revision':task['revision'],
                    'plan_revision':task['plan_revision'],'evidence_ref':ref,
-                   'summary':Path(ref['path']).read_text(encoding='utf-8')}
+                   'summary':harness_sessions.summary(ref['path'], 'See the original decision')}
         if action in ('revise','reopen'):
-            payload['plan_ref'] = ref
+            payload['plan_ref'] = note
+        if action == 'revise':
+            payload.pop('expected_task_revision')
+            payload.pop('plan_revision')
+            payload.update(base_sha256=args.base_sha256, affected_scope=args.affected_scope,
+                           affected_request_ids=args.affected_request)
+            if contract_body is not None:
+                payload['delivery_contract']=contract_body
         if action == 'revise' and args.authorization:
             payload['human_authorization_ref'] = harness_sessions.reference(root,args.authorization)
         if action == 'transfer':
             payload.update(new_owner_actor=harness_sessions.target(root,args.owner),recovery_ref=ref)
         return tasks.mutate(root,action,actor,payload)
     if action == 'maintenance-note':
-        import harness_maintenance
+        from task_ledger import maintenance as harness_maintenance
         return harness_maintenance.record_note(root, actor, args.request, args.note, args.status, duplicate_of=args.duplicate_of)
     if action == 'init':
-        from harness_sessions import reference
+        from task_ledger.sessions import reference
         ref = reference(root,args.authorization)
         return tasks.initialize(root,actor,ref,'init:'+ref['sha256'])
     if action == 'return' and (args.result or args.run):
@@ -153,12 +228,12 @@ def task_command(root, args):
     if action == 'dispose' and args.decision:
         return tasks.dispose_result(root, actor, args.return_id, args.decision, disposition=args.use,
                                     scope_ids=args.scope,acceptance=args.acceptance,checks_path=args.checks,
-                                    apply_review_ids=args.apply_review,handling_paths=args.handling)
+                                    apply_review_ids=args.apply_review,handling_paths=args.handling,wave=args.wave)
     if action == 'business-bind' and args.package:
-        import harness_business
+        from task_ledger import business as harness_business
         return harness_business.bind_package(root, actor, args.task, args.package)
     if action == 'business-observe' and args.capture:
-        import harness_business
+        from task_ledger import business as harness_business
         return harness_business.observe_package(root, actor, args.task, args.capture, args.package_id, args.expected_account_user_id)
     raise ValueError('Select the original request/run and report for this action.')
 
@@ -206,5 +281,8 @@ if __name__ == '__main__':
         result = {'error':str(exc)}
         if isinstance(exc,tasks.WorkConflict):
             result.update(code=exc.code, record_id=exc.record_id)
+            if hasattr(exc,'review_request'):
+                result['review_request']=exc.review_request
+                result['objects']=sorted(exc.review_units)
         print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)

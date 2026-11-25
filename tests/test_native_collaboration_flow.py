@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
 import agent_runtime as runtime
-import harness_sessions as sessions
+from task_ledger import sessions
 import harness_tasks as tasks
 import run_worker
 import test_agent_runtime as fixtures
@@ -23,6 +23,7 @@ import collaboration_transport_fixture as transport
 import harness_scope
 import execution_lease
 import production_review
+from scientific_review.author_tools import ReviewService
 
 
 class NativeCollaborationTests(unittest.TestCase):
@@ -219,6 +220,11 @@ class NativeCollaborationTests(unittest.TestCase):
         note.write_text('Continue the same Session using the retained result and the current source originals.')
         previous_actor = self.actor
         self.actor = {**self.actor, 'id': 'successor-chat', 'instance': 'successor-chat'}
+        snapshot = tasks.read_task(self.root, request['task_id'])['task']
+        from task_ledger.sessions import reference
+        tasks.mutate(self.root,'transfer',previous_actor,{'id':'lead-transfer','task_id':request['task_id'],
+            'expected_task_revision':snapshot['revision'],'evidence_ref':reference(self.root,note),
+            'summary':'Original lead transfers the same task and writer.','new_owner_actor':self.actor})
         try:
             with patch.dict(os.environ, CODEX_THREAD_ID='successor-chat'):
                 resumed = self.dispatch(instructions=note, run_id=first['run_id'])
@@ -253,7 +259,7 @@ class NativeCollaborationTests(unittest.TestCase):
         self.assertEqual(len(tasks.read_task(self.root,'task')['runs']),1)
 
     def test_native_author_reports_plain_file_with_real_identity_and_no_relaunch(self):
-        import harness_maintenance
+        from task_ledger import maintenance as harness_maintenance
         self.finding_report=self.home/'observed-tool-error.md'
         self.finding_report.write_text('The public tool failed on this original input; independent work continues.')
         outcome=self.dispatch()
@@ -402,7 +408,7 @@ class NativeCollaborationTests(unittest.TestCase):
         # Repeated full collection in the same Session is idempotent even in a
         # later invocation. Rendering a Hook above did not create this fact.
         self.adapters=[]
-        service=__import__('agent_review').ReviewService(runtime.Runtime(self.root),tasks.read_request(self.root,'request'),{},current['id'],self.home,lambda:None)
+        service=ReviewService(runtime.Runtime(self.root),tasks.read_request(self.root,'request'),{},current['id'],self.home,lambda:None)
         service.record_delivery(self.collect_review_id,self.collected)
         self.assertEqual(len(read_snapshot(self.root,request_id='request')['work']['reviews']['request'][0]['deliveries']),1)
 
@@ -422,7 +428,7 @@ class NativeCollaborationTests(unittest.TestCase):
             run_id='cross-host-receiver',plan_revision=1,input_path=self.evidence['path'],input_sha256=self.evidence['sha256'],
             evidence_home=str(self.home/'cross-host'),program_context={})
         self.assertEqual(outcome['outcome'],'succeeded')
-        service=__import__('agent_review').ReviewService(new,tasks.read_request(self.root,'new-host-responsibility'),{},
+        service=ReviewService(new,tasks.read_request(self.root,'new-host-responsibility'),{},
             outcome['run_id'],self.home,lambda:None)
         service.record_delivery(original_review['review_id'],original_review)
         rows=service.availability();self.assertEqual(rows[0]['review_id'],original_review['review_id'])
@@ -565,16 +571,18 @@ class NativeCollaborationTests(unittest.TestCase):
         self.final_adopt_evidence(first,note)
         self.assertEqual(self.task_decision('complete',note)['state'],'completed')
         self.task_decision('reopen',note)
+        reopened=next(event['payload']['id'] for event in reversed(tasks.read_task(self.root,'task')['events']) if event['kind']=='reopen')
         self.assertEqual(self.dispatch()['outcome'], 'succeeded')
+        self.assertEqual(self.dispatch(instructions=note)['state'],'original_delivered')
         with self.assertRaisesRegex(tasks.WorkConflict, 'ended'):
-            self.dispatch(instructions=note)
+            self.dispatch(instructions=note,basis=reopened)
         self.assertEqual(len(self.calls), 1)
-        resumed = self.dispatch(instructions=note, resume_stopped=True)
+        resumed = self.dispatch(instructions=note, resume_stopped=True,basis=reopened)
         self.assertEqual(resumed['outcome'], 'succeeded')
         self.assertEqual(self.calls[-1][2]['previous']['id'], 'author')
         self.assertEqual(tasks.read_run(self.root, first['run_id']), original)
         self.assertEqual(len(self.calls), 2)
-        self.dispatch(instructions=note, resume_stopped=True,run_id=first['run_id'])
+        self.dispatch(instructions=note, resume_stopped=True,run_id=first['run_id'],basis=reopened)
         self.assertEqual(len(self.calls), 2)
         with tasks._connect(self.root, True) as c:
             events = [json.loads(row[0]) for row in c.execute(
@@ -710,9 +718,11 @@ class NativeCollaborationTests(unittest.TestCase):
         adopted=cli('work-dispose','--return-id',result['id'],'--use','adopt','--decision',str(report))
         self.assertEqual(adopted['disposition'],'adopt')
         note=self.home/'updated-plan.md';note.write_text('Clarify the intended comparison; continue independent research.')
-        changed=cli('work-revise','--task',task['id'],'--note',str(note))
+        revision=('work-revise','--task',task['id'],'--base-sha256',task['plan_ref']['sha256'],
+                  '--note',str(note),'--reason-file',str(report))
+        changed=cli(*revision)
         self.assertEqual(changed['state'],'active')
-        self.assertEqual(cli('work-revise','--task',task['id'],'--note',str(note)),changed)
+        self.assertEqual(cli(*revision),changed)
         finished=cli('work-complete','--task',task['id'],'--note',str(report))
         self.assertEqual(finished['status'],'completion_pending')
         self.assertEqual(tasks.read_task(self.root,task['id'])['task']['state'],'active')

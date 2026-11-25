@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import {createHash} from 'node:crypto'
 import {readFileSync} from 'node:fs'
 import {createRequire} from 'node:module'
-import {join} from 'node:path'
 import {pathToFileURL} from 'node:url'
 import {apply as profile, limitTimeoutRetries} from '../bin/dsh_native.mjs'
 
@@ -117,10 +116,12 @@ async function replay(events, receipt, preceding) {
     tool_names:events.filter(e => e.type === 'tool/call').map(e => e.data.name)}
 }
 
-if (process.argv.includes('--original-b02')) {
-  const root = 'materials/packages/tiangong-package-gap-global-main-20261110/apple-scm-reuse-20261110/apple/material-dispatch-20261115'
-  const refs = ['b02-resume-20261119-0411pt.json','b02-original-followthrough-0536pt.json',
-    'b02-original-continuation-0632pt.json'].map(name => JSON.parse(readFileSync(join(root,name))).receipt)
+const args = process.argv.slice(3)
+if (args.length) {
+  const [flag, replayFile, sessionRoot] = args
+  assert.ok(flag === '--original-b02' && replayFile && sessionRoot && args.length === 3,
+    'Pass --original-b02 REPLAY_INDEX SESSION_STORE to replay explicitly selected native evidence.')
+  const {receipt_refs:refs} = JSON.parse(readFileSync(replayFile)).B02
   const receipts = refs.map(ref => {
     const raw = readFileSync(ref.path)
     assert.equal(createHash('sha256').update(raw).digest('hex'),ref.sha256)
@@ -128,9 +129,8 @@ if (process.argv.includes('--original-b02')) {
   })
   const [{Context}, {default:Store}, persistence] = await Promise.all(
     ['cordis','dsh-session','dsh-session-persistence-jsonl'].map(installed))
-  const host = JSON.parse(readFileSync('installation/agent-autonomy-20261111/programmatic-worker.json')).hosts.dsh
   const ctx = new Context(), store = ctx.plugin(Store)
-  const disk = ctx.plugin(persistence, {root:join(host.dsh_home,'sessions')})
+  const disk = ctx.plugin(persistence, {root:sessionRoot})
   await Promise.all([store.await(), disk.await()])
   let handle
   try {

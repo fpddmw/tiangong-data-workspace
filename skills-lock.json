@@ -622,8 +622,8 @@
         },
         {
           "path": "scripts/lib/cli-development.mjs",
-          "bytes": 27206,
-          "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+          "bytes": 27391,
+          "sha256": "5156e4e46d5f68eaf89705b6cf44f990111ae99483dbbfe95df9f24cd59fc244",
           "mode": "0o644"
         },
         {
@@ -634,8 +634,8 @@
         },
         {
           "path": "scripts/lib/cli-launcher.mjs",
-          "bytes": 8462,
-          "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+          "bytes": 8673,
+          "sha256": "ae8ca56c040abd931c0678db95403e3e73f518f860f3e227eece1e728cbc11c8",
           "mode": "0o644"
         },
         {
@@ -651,7 +651,7 @@
           "mode": "0o644"
         }
       ],
-      "inventory_sha256": "b4051a7e31b8c1bad0f42cbb9eed853485f87929a3d01ad2503541a497f6a6c8"
+      "inventory_sha256": "35c21c8fe1cf34030d892855840d664f895cb89c933c628af8faa0c142a82ed1"
     },
     {
       "name": "foundry-tidas-authoring",
@@ -870,8 +870,8 @@
         },
         {
           "path": "scripts/lib/cli-development.mjs",
-          "bytes": 27206,
-          "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+          "bytes": 27391,
+          "sha256": "5156e4e46d5f68eaf89705b6cf44f990111ae99483dbbfe95df9f24cd59fc244",
           "mode": "0o644"
         },
         {
@@ -882,8 +882,8 @@
         },
         {
           "path": "scripts/lib/cli-launcher.mjs",
-          "bytes": 8462,
-          "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+          "bytes": 8673,
+          "sha256": "ae8ca56c040abd931c0678db95403e3e73f518f860f3e227eece1e728cbc11c8",
           "mode": "0o644"
         },
         {
@@ -893,7 +893,7 @@
           "mode": "0o644"
         }
       ],
-      "inventory_sha256": "dfa81d009b77017b0f2db4c4e3ce620123132fadbbfe33dbc05a81df7b53a15b"
+      "inventory_sha256": "b13b46409bec30253664b1d0e55d6a39c89a9638183d21b2503332cb415ce370"
     },
     {
       "name": "lifecycleinventory-review",
@@ -1062,8 +1062,8 @@
         },
         {
           "path": "scripts/lib/cli-development.mjs",
-          "bytes": 27206,
-          "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+          "bytes": 27391,
+          "sha256": "5156e4e46d5f68eaf89705b6cf44f990111ae99483dbbfe95df9f24cd59fc244",
           "mode": "0o644"
         },
         {
@@ -1074,8 +1074,8 @@
         },
         {
           "path": "scripts/lib/cli-launcher.mjs",
-          "bytes": 8462,
-          "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+          "bytes": 8673,
+          "sha256": "ae8ca56c040abd931c0678db95403e3e73f518f860f3e227eece1e728cbc11c8",
           "mode": "0o644"
         },
         {
@@ -1091,7 +1091,7 @@
           "mode": "0o644"
         }
       ],
-      "inventory_sha256": "55ee18a16e2242946436e62feab9517c7dab21407dba5edeb868fa9c1e2f9a82"
+      "inventory_sha256": "58fae2fc36fae388d105dd92ca5db6e5f5947f5dddbc6de3d1adb02ae0b640cb"
     },
     {
       "name": "lifecyclemodel-recursive-orchestrator",
@@ -1367,8 +1367,8 @@
         },
         {
           "path": "scripts/lib/cli-development.mjs",
-          "bytes": 27206,
-          "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+          "bytes": 27391,
+          "sha256": "5156e4e46d5f68eaf89705b6cf44f990111ae99483dbbfe95df9f24cd59fc244",
           "mode": "0o644"
         },
         {
@@ -1379,8 +1379,8 @@
         },
         {
           "path": "scripts/lib/cli-launcher.mjs",
-          "bytes": 8462,
-          "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+          "bytes": 8673,
+          "sha256": "ae8ca56c040abd931c0678db95403e3e73f518f860f3e227eece1e728cbc11c8",
           "mode": "0o644"
         },
         {
@@ -1396,7 +1396,7 @@
           "mode": "0o644"
         }
       ],
-      "inventory_sha256": "2d274a07817249ce855fb5c7cf8349ef9b8775aafdea77271007be572d5f1ff4"
+      "inventory_sha256": "139dec74eec67f521836e6fb1f73df0692ee3545fd30193deedbc076cabce89e"
     },
     {
       "name": "process-scope-statistics",
@@ -1664,8 +1664,8 @@
     },
     {
       "path": ".agents/skills/scripts/lib/cli-development.mjs",
-      "bytes": 27206,
-      "sha256": "a2a1d298ffbe40e93632afe08551b2a7db237a706700339aa6b2f8b131e67d4e",
+      "bytes": 27391,
+      "sha256": "5156e4e46d5f68eaf89705b6cf44f990111ae99483dbbfe95df9f24cd59fc244",
       "mode": "0o644"
     },
     {
@@ -1676,8 +1676,8 @@
     },
     {
       "path": ".agents/skills/scripts/lib/cli-launcher.mjs",
-      "bytes": 8462,
-      "sha256": "15801afffb8a3c39762f675318b37c52279cb9ea00cd7072939098d700547b05",
+      "bytes": 8673,
+      "sha256": "ae8ca56c040abd931c0678db95403e3e73f518f860f3e227eece1e728cbc11c8",
       "mode": "0o644"
     },
     {
@@ -1713,6 +1713,11 @@
   ],
   "local_update": {
     "purpose": "Preserve autonomous authorship, complete revision and actual typed CLI coverage; installed research capabilities replace per-task skill registration.",
-    "patch": "installation/typed-infrastructure-migration-20261115/skills-local.patch"
+    "patch": "installation/typed-infrastructure-migration-20261115/skills-local.patch",
+    "large_output": {
+      "upstream": "https://github.com/tiangong-lca/agent-skills/issues/165",
+      "qualification": "tests/test_skill_output.mjs",
+      "scope": "Forward stdout and stderr for ordinary execution; explicit capture remains available. Requalify the official release on update."
+    }
   }
 }

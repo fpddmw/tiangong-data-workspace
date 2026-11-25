@@ -40,7 +40,7 @@
 
 ## 共享产品与铜的处理方式
 
-**上游出现铜，先处理电力的准确铜需求；不自动建立“铜项目”。** 主题的独立建立条件见[维护合同](../../NAVIGATION.md#topic-delivery-views)，产品/循环边界见[系统规划](../../roles/SYSTEM-PLANNING.md#shared-product-boundary)。
+**上游出现铜，先处理电力的准确铜需求；不自动建立“铜项目”。** 主题的独立建立条件见[维护合同](../workspace/materials.md#topic-delivery-views)，产品/循环边界见[系统规划](../../roles/SYSTEM-PLANNING.md#shared-product-boundary)。
 
 | 原材料与关系 | 本次可确认的边界 | 电力消费者还须证明什么 |
 | --- | --- | --- |
@@ -68,4 +68,4 @@
 
 本页由处理电力主题的协调者维护；具体数据写者沿各原交接，不由本页重新任命。新交付、真实交接、完成/暂停、共享依赖或验收改变时，原包先更新证据，协调者在同次收口更新本页受影响行及下一步。先读原写者当前入口，保留证据日期；冲突写“待核实”，不从旧计数推算实时结论。
 
-完整维护、验收和新主题步骤只有[统一合同](../../NAVIGATION.md#topic-delivery-views)和[可复制模板](topic-template.md)两处各司其职。本页不追加逐工具日志。样板核验见[本次实施与验收](../../materials/packages/electricity-topic-maintenance-20261108/README.md)。
+完整维护、验收和新主题步骤只有[统一合同](../workspace/materials.md#topic-delivery-views)和[可复制模板](topic-template.md)两处各司其职。本页不追加逐工具日志。样板核验见[本次实施与验收](../../materials/packages/electricity-topic-maintenance-20261108/README.md)。

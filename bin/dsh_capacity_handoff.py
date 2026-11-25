@@ -111,12 +111,12 @@ def _complete_observation(root):
 
 def adopt(root,source,*,dry_run=False):
     root=Path(root).resolve();actor=_maintainer(root)
-    from harness_sessions import reference
+    from task_ledger.sessions import reference
     authority=reference(root,source)
     result={'policy':capacity.POLICY,'limits':capacity.LIMITS,'dry_run':dry_run,'transports':[]}
     with capacity._lock(root):
         queue=capacity._queue(root)
-        if queue.get('policy')==capacity.PILOT_POLICY:
+        if queue.get('policy') in capacity.PROVIDER_LIMITS:
             raise ValueError('Drain the provider pilot before restoring the six-seat role policy.')
         observed = _complete_observation(root)
         processes={p['pid']:p for p in observed['processes']}
@@ -200,7 +200,7 @@ def adopt(root,source,*,dry_run=False):
 
 def provider_pilot(root,source,provider=None,*,dry_run=False):
     """Change the existing queue protocol only in a fully observed empty window."""
-    from harness_sessions import reference
+    from task_ledger.sessions import reference
     root=Path(root).resolve()
     actor=_maintainer(root)
     authority=reference(root,source)
@@ -221,9 +221,11 @@ def provider_pilot(root,source,provider=None,*,dry_run=False):
                     live_managers.append(binding['run_id'])
         ready=(capacity.policy_ready(queue) and not queue['entries'] and not active
                and not observed['marked_runs'] and not live_managers)
+        selected_policy = (capacity.EIGHT_SEAT_POLICY if provider == 'tiangong-cluster' else
+                           capacity.PILOT_POLICY if provider else capacity.POLICY)
         change={'provider':provider,'previous_provider':before,'eligible':ready,'dry_run':dry_run,
-                'policy':capacity.PILOT_POLICY if provider else capacity.POLICY,
-                'limits':capacity.PILOT_LIMITS if provider else capacity.LIMITS,
+                'policy':selected_policy,
+                'limits':capacity.PROVIDER_LIMITS.get(selected_policy,capacity.LIMITS),
                 'existing_tickets':len(queue['entries']),'occupied':counts,'live_pre_admission_managers':live_managers}
         if dry_run:return change
         if not ready:
@@ -237,7 +239,7 @@ def provider_pilot(root,source,provider=None,*,dry_run=False):
 
 def retire_exited_waits(root, source, *, dry_run=False):
     """Apply the same exit proof for managers that already loaded older code."""
-    from harness_sessions import reference
+    from task_ledger.sessions import reference
     root = Path(root).resolve()
     actor, authority = _maintainer(root), reference(root, source)
     with capacity._lock(root):
@@ -256,11 +258,13 @@ def retire_exited_waits(root, source, *, dry_run=False):
 
 def abandoned_transport(root, run, *, queue=None):
     """Read the original FIFO coordinates only for a proven unadmitted intent."""
+    from dsh_auto_resume import HANDLED, WATCH
+    events = [event for event in run['events'] if event['kind'] not in (WATCH, HANDLED)]
     if (run['target_host'] != 'deepseek_harness' or run['outcome'] != 'intent' or run['stop_requested']
             or run['native_identity'] or run['latest_receipt']
-            or [e['kind'] for e in run['events']] != ['intent', 'capacity', 'capacity']):
+            or [e['kind'] for e in events] != ['intent', 'capacity', 'capacity']):
         return None
-    _, queued, abandoned = run['events']
+    _, queued, abandoned = events
     before, after = queued['payload'], abandoned['payload']
     if (before.get('phase') != 'queued' or after != {**before, 'phase': 'abandoned'}
             or before.get('queue_source') != str(capacity._paths(root)[0])):
@@ -276,7 +280,7 @@ def abandoned_transport(root, run, *, queue=None):
         path = execution.metadata_path(spec['evidence_home'], run['id'])
         meta = capacity._read(path, {})
         manager, session = meta['manager'], spec.get('requested_session_id')
-        pilot=queue.get('policy')==capacity.PILOT_POLICY
+        pilot=queue.get('policy') in capacity.PROVIDER_LIMITS
         provider=None
         if pilot:
             request=tasks.read_request(root,run['request_id'])
@@ -288,7 +292,7 @@ def abandoned_transport(root, run, *, queue=None):
                  'kind': before['kind'], 'phase': 'queued',
                  'queued_at': datetime.fromisoformat(queued['created_at']).timestamp(), 'manager': manager,
                  'execution_path': str(path), 'native_session': session,
-                 'policy': queue.get('policy'), 'admission_policy': capacity.PILOT_POLICY if pilot else capacity.POLICY,
+                 'policy': queue.get('policy'), 'admission_policy': queue['policy'] if pilot else capacity.POLICY,
                  **({'provider':provider} if pilot else {})}
         _original(root, entry)
         observed = _complete_observation(root)
@@ -308,11 +312,11 @@ def abandoned_transport(root, run, *, queue=None):
         return None
 
 
-def recover_abandoned(root, worker, original, *, config_path=None, route=None):
+def recover_abandoned(root, worker, original, *, config_path=None, route=None, automatic=False):
     """Respond to an explicit owner continuation of this same launch intent."""
     if original['target_host'] != 'deepseek_harness' or original['outcome'] != 'intent':
         return None
-    from harness_sessions import reference
+    from task_ledger.sessions import reference
     from harness_hosts import ROUTE_ADAPTERS
     from run_worker import _selected_run
     run_id = original['id']
@@ -323,16 +327,58 @@ def recover_abandoned(root, worker, original, *, config_path=None, route=None):
         if not latest or latest['id'] != run_id or latest['stop_requested'] or latest['outcome'] != 'intent':
             return None
         current = tasks.read_run(root, run_id)
+        watch = None
+        if automatic:
+            from dsh_auto_resume import WATCH
+            watch = next((e['payload'] for e in reversed(current['events']) if e['kind'] == WATCH), None)
+            if (not watch or not capacity.recovery_managed(root, watch['provider'])
+                    or execution.matches(watch['manager']) is not False):
+                return None
+            queued = next((item for item in queue['entries'] if item['run_id'] == run_id
+                           and item['phase'] == 'queued' and not item.get('wait_token')), None)
+            if queued and queued['manager'] == watch['manager']:
+                _original(root, queued)
+                events = [event['payload'] for event in current['events'] if event['kind'] == 'capacity']
+                if [event['phase'] for event in events] == ['queued']:
+                    observed = _complete_observation(root)
+                    if queued not in capacity._effective(queue, observed)[2]:
+                        return None
+                    tasks.mutate(root, 'run-capacity', worker.actor, {'id':run_id, **events[0], 'phase':'abandoned'})
+                    queue['entries'].remove(queued)
+                    execution.atomic_json(capacity._paths(root)[0], queue)
+                    current = tasks.read_run(root, run_id)
         entry = next((e for e in queue['entries'] if e['run_id'] == run_id
                       and e['phase'] == 'handoff' and e.get('owner_recovery')), None)
         staged = entry is not None
         if entry is None:
             entry = abandoned_transport(root, current, queue=queue)
+            if entry is None and automatic and not any(e['kind'] == 'capacity' for e in current['events']):
+                # The manager may have died before acquiring its first FIFO
+                # sequence. Only a still-unstarted original intent can enter.
+                from harness_package import launch_spec
+                spec = launch_spec(root, current)
+                if not spec.get('evidence_home') or any(e['run_id'] == run_id for e in queue['entries']):
+                    return None
+                path = execution.metadata_path(spec['evidence_home'], run_id)
+                session = spec.get('requested_session_id')
+                request = tasks.read_request(root, current['request_id'])
+                entry = {'run_id':run_id, 'request_id':current['request_id'], 'kind':'review' if request['independent'] else 'author',
+                         'sequence':queue['next_sequence'], 'phase':'queued', 'queued_at':time.time(), 'manager':watch['manager'],
+                         'execution_path':str(path), 'native_session':session, 'policy':queue.get('policy'),
+                         'admission_policy':queue['policy'] if queue.get('policy') in capacity.PROVIDER_LIMITS else capacity.POLICY,
+                         'provider':watch['provider']}
+                _original(root, entry)
+                observed = _complete_observation(root)
+                if (run_id in observed['marked_runs']
+                        or any(row['run_id'] == run_id or (session and row.get('native_session') == session) for row in observed['occupied'])
+                        or any(capacity._writer(p) is not False for p in capacity._writer_paths(root, current['config_ref'], session))):
+                    return None
+                queue['next_sequence'] += 1
         if entry is None:
             return None
         task = tasks.read_task(root, request['task_id'])['task']
         owners = (current['dispatcher_actor'], task['owner_actor'], request['sender_actor'], request['recipient_actor'])
-        if tasks.native_key(worker.actor) not in {tasks.native_key(a) for a in owners if a}:
+        if not automatic and tasks.native_key(worker.actor) not in {tasks.native_key(a) for a in owners if a}:
             raise ValueError('Only the original responsible actor can continue this abandoned transport.')
         tasks.admission(root, task['id'], worker.actor, request_id=request['id'], side_effect=True)
         if (config_path and reference(root, config_path) != current['config_ref']
@@ -343,7 +389,7 @@ def recover_abandoned(root, worker, original, *, config_path=None, route=None):
             token = uuid.uuid4().hex
             directory = Path(entry['execution_path']).parent
             intent = _fixed(directory / ('transport-handoff-' + token + '-intent.json'), {
-                'source': 'owner_continue_abandoned_transport', 'actor': worker.actor,
+                'source': 'host_recover_abandoned_transport' if automatic else 'owner_continue_abandoned_transport', 'actor': worker.actor,
                 'run_id': run_id, 'request_id': request['id'], 'original_ticket': dict(entry),
                 'original_execution': meta, 'config_ref': current['config_ref'], 'input_refs': current['input_refs'],
                 'original_queue_events': current['events'][1:], 'token': token})
@@ -379,6 +425,7 @@ def claim(root,run,lease,token):
 
 def run(root,run_id,token,*,worker=None):
     import agent_runtime
+    import run_worker
     from harness_package import launch_spec
     root=Path(root).resolve();original=tasks.read_run(root,run_id)
     request=tasks.read_request(root,original['request_id'])
@@ -389,18 +436,30 @@ def run(root,run_id,token,*,worker=None):
     if not spec.get('evidence_home'):raise ValueError('Original launch home missing; preserve transport')
     context=({'parent_brief_ref':parent['input_ref']} if request['independent'] else {}) if config['programmatic'] else None
     previous_id=None
+    automatic = False
     if original['operation']=='resume':
         previous,spec,prior_receipt=_resume_binding(root,original);previous_id=previous['id']
         if context is None:raise ValueError('Original continuation must use its programmatic recovery context')
         context['technical_recovery']={'ref':spec['continuation_ref'],
             'evidence_refs':[prior_receipt]}
+        if spec.get('goal_budget'):
+            context['technical_recovery']['goal_budget']=spec['goal_budget']
         context['prior_receipt_ref']=prior_receipt
-    return (worker or agent_runtime.Runtime(root)).execute(config_path=original['config_ref']['path'],role=role,
+        intent = next(e['payload'] for e in original['events'] if e['kind'] == 'intent')
+        automatic = intent.get('dsh_auto_continue_from') == previous_id
+        if automatic:
+            from dsh_auto_resume import CLAIM
+            probe = next(e['payload']['probe'] for e in reversed(previous['events']) if e['kind'] == CLAIM
+                         and e['payload']['next_run_id'] == run_id)
+            context['technical_recovery'].update(automatic=True, probe=probe)
+    worker = worker or agent_runtime.Runtime(root)
+    result = worker.execute(config_path=original['config_ref']['path'],role=role,
         task_id=request['task_id'],request_id=request['id'],run_id=run_id,
         input_path=original['input_refs'][0]['path'],input_sha256=original['input_refs'][0]['sha256'],
         evidence_home=spec['evidence_home'],operation=original['operation'],previous_run_id=previous_id,
         program_context=context,
         queued_handoff=token)
+    return run_worker._after_program_turn(root, worker, parent, request, config, run_id, result)
 
 
 if __name__=='__main__':

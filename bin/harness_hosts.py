@@ -21,7 +21,7 @@ MANAGEMENT_HOST = NativeHost('codex', 'thread', 'codex-app-server', 'native_rpc'
 HOSTS = {item.host: item for item in (
     MANAGEMENT_HOST,
     NativeHost('claude_code', 'session', 'claude-code-print', 'native_cli_json', 'D',
-               ('claude_adapter', 'ClaudeAdapter')),
+               ('native_hosts.claude_adapter', 'ClaudeAdapter')),
     NativeHost('deepseek_harness', 'session', 'dsh-headless', 'native_cli_json', 'DSH',
                ('dsh_headless', 'DeepSeekAdapter'), managed_entry='headless', shell_env=('DSH_SESSION_ID', 'DSH_SHELL', '1'),
                capabilities=frozenset({'author_review', 'native_goal', 'interrupted_resume', 'tracked_processes'})),

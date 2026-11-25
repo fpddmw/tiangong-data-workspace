@@ -1,7 +1,7 @@
 """Typed scope migration, partial coverage and immutable source facts."""
 import contextlib
 import copy
-import csv
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -79,11 +79,47 @@ class ScopeTests(unittest.TestCase):
             return result
         with patch.object(s,'_scope_input',side_effect=changed),self.assertRaises(ValueError):self.apply(value)
         self.assertEqual(s.read_scope(self.root,'task')['total'],2)
-    def test_apple_source_has_36_requirements_and_73_branches(self):
-        root=Path(__file__).resolve().parents[1]
-        with (root/'materials/packages/apple-lca-delivery-20261004/outputs/coverage.csv').open(encoding='utf-8-sig',newline='') as f:rows=list(csv.DictReader(f))
-        self.assertEqual(len(rows),73)
-        self.assertEqual(len({r['requirement_id'] for r in rows}),36)
+    def test_contract_and_scope_keep_the_cited_working_plan_after_it_changes(self):
+        plan = Path(self.plan['path'])
+        plan.write_text('Working coverage at delegation')
+        before = plan.read_bytes()
+        doc = self.save('contract-current-plan', {'purpose':'Use the agreed endpoints',
+                        'endpoint':'evidence', 'authority_refs':[self.evidence],
+                        'scope_boundary':{'in_scope':'P0','out_of_scope':'Other objects'},
+                        'acceptance':{'text':'Accepted use','refs':[str(plan)]}})
+        saved = self.cli('work-contract','--task','task','--set',doc['path'],'--source',str(plan))
+        self.assertEqual(saved.returncode, 0, saved.stderr)
+        agreement = s.read_contract(self.root,'task','task')['contract']
+        plan.write_text('Later coverage, unchanged frozen commitment')
+        refs = [agreement['source_ref'], agreement['body']['acceptance']['refs'][0]]
+        for ref in refs:
+            self.assertEqual(Path(t.evidence_ref(self.root,ref)['path']).read_bytes(),before)
+        at_scope = plan.read_bytes()
+        value = self.payload(1)
+        value['items'][0]['source_refs'] = [str(plan)]
+        self.apply(value, dry_run=True)
+        archive = t.store.plan_history_path(plan, hashlib.sha256(at_scope).hexdigest())
+        self.assertFalse(archive.exists())
+        self.apply(value)
+        self.request('frozen-request', scope=['P0'])
+        plan.write_text('A later wave')
+        item = s.read_scope(self.root,'task')['scope_items'][0]
+        self.assertEqual(Path(t.evidence_ref(self.root,item['source_refs'][0])['path']).read_bytes(),at_scope)
+        check = self.cli('work-check','--request','frozen-request','--for','dispatch')
+        self.assertEqual(check.returncode, 0, check.stderr)
+        self.assertTrue(json.loads(check.stdout)['ready'],check.stdout)
+
+    def test_requirements_and_deliverables_keep_independent_full_counts(self):
+        items = [
+            {'scope_id': f'{kind}-{index}', 'kind': kind, 'label': f'Fixture {kind} {index}',
+             'source_refs': [self.brief]}
+            for kind, count in (('requirement', 36), ('deliverable', 73)) for index in range(count)
+        ]
+        self.apply({'items': items, 'source_ref': self.brief, 'verified_scope_ids': [row['scope_id'] for row in items]})
+        view = s.read_scope(self.root, 'task')
+        self.assertEqual(view['counts']['requirement']['total'], 36)
+        self.assertEqual(view['counts']['deliverable']['total'], 73)
+        self.assertEqual(view['remaining_count'], 109)
 
 
 class DispatchBasisTests(unittest.TestCase):
@@ -157,3 +193,14 @@ class DispatchBasisTests(unittest.TestCase):
         path.write_bytes(original)
         Path(self.evidence['path']).write_text('Authority source changed')
         self.assertFalse(self.report()['ready'])
+
+    def test_original_interface_bytes_survive_an_edit_to_the_working_page(self):
+        interface=self.save('mutable-use-interface',{'purpose':'Original bounded interface'})
+        updated=copy.deepcopy(self.agreement)
+        updated['interfaces']['refs']=[interface]
+        with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),t.transaction(self.root) as c:
+            s.set_contract(c,self.root,'request','request',updated,self.brief,self.lead)
+        before=self.report()
+        Path(interface['path']).write_text('New interface for a different revision')
+        self.assertEqual(self.report(),before)
+        self.assertTrue(next(source for source in before['sources'] if source['ref']['sha256']==interface['sha256'])['status']=='pass')

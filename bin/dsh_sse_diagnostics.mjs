@@ -1,6 +1,6 @@
 // Observation at the native model stream and the installed OpenAI-compatible SDK.
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -9,6 +9,8 @@ import { safeText } from './safe_diagnostics.mjs'
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const malformed = 'Error reading response: malformed server-sent event JSON.'
+const currentRequest = new AsyncLocalStorage()
+const observedResponses = new WeakMap()
 const timestamp = () => Math.round(performance.timeOrigin + performance.now())
 const errorCode = code => typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,100}$/u.test(code) ? code : undefined
 
@@ -22,15 +24,22 @@ function requestIds(headers) {
 function observeSdkFetch(client, current) {
   const original = client?.fetchWithTimeout
   if (typeof original !== 'function') return () => {}
-  async function fetchWithTimeout(...args) {
+  async function fetchWithTimeout(url, init, ...args) {
     const attempt = current.getStore()
-    if (!attempt) return original.apply(this,args)
+    if (!attempt) return original.call(this,url,init,...args)
     const request = {sent_at_ms:timestamp()}
     attempt.http.push(request)
     try {
-      const response = await original.apply(this,args)
+      const headers = new Headers(init?.headers)
+      if (!headers.has('traceparent')) {
+        headers.set('traceparent', `00-${randomBytes(16).toString('hex')}-${randomBytes(8).toString('hex')}-00`)
+      }
+      const trace = headers.get('traceparent')
+      if (/^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/u.test(trace)) request.client_traceparent = trace
+      const response = await original.call(this,url,{...init,headers},...args)
       Object.assign(request, {headers_at_ms:timestamp(), status:response.status,
         request_ids:requestIds(response.headers)})
+      observedResponses.set(response,request)
       return response
     } catch (error) {
       request.failed_at_ms = timestamp()
@@ -42,19 +51,18 @@ function observeSdkFetch(client, current) {
 }
 
 export async function installRequestTiming(ctx, moduleEntry, {provider, sessionId, position, output}) {
-  const current = new AsyncLocalStorage()
   let offFetch = () => {}
   try {
     const sdk = dirname(createRequire(moduleEntry).resolve('openai'))
     const {OpenAI} = await import(pathToFileURL(join(sdk,'client.mjs')))
-    offFetch = observeSdkFetch(OpenAI?.prototype, current)
+    offFetch = observeSdkFetch(OpenAI?.prototype, currentRequest)
   } catch { /* The native content timestamps still apply to other adapters. */ }
   async function* observe(next, attempt) {
     let stream
     try {
-      stream = current.run(attempt, () => next()[Symbol.asyncIterator]())
+      stream = currentRequest.run(attempt, () => next()[Symbol.asyncIterator]())
       while (true) {
-        const item = await current.run(attempt, () => stream.next())
+        const item = await currentRequest.run(attempt, () => stream.next())
         if (item.done) break
         const chunk = item.value
         const at = timestamp()
@@ -77,7 +85,7 @@ export async function installRequestTiming(ctx, moduleEntry, {provider, sessionI
       attempt.error_code = errorCode(error?.code)
       throw error
     } finally {
-      try {await current.run(attempt, () => stream?.return?.())}
+      try {await currentRequest.run(attempt, () => stream?.return?.())}
       finally {
         attempt.finished_at_ms ??= timestamp()
         output({type:'htam_request_timing', ...attempt})
@@ -113,8 +121,11 @@ class FrameObserver {
     this.response = response
     this.lineModule = lineModule
     this.config = config
+    this.attempt = currentRequest.getStore()
+    const wire = observedResponses.get(response)
+    this.wire = wire ? (wire.sse_body = {bytes_received:0}) : undefined
     this.pending = Buffer.alloc(0)
-    this.normal = createHash('sha256')
+    this.normal = config.metadataOnly ? null : createHash('sha256')
     this.normalCount = 0
     this.offset = 0
     this.bytesRead = 0
@@ -127,14 +138,22 @@ class FrameObserver {
     const item = eventData(raw, this.lineModule.LineDecoder)
     if (item?.data === '[DONE]') this.done = true
     if (item && !this.done) {
-      try { JSON.parse(item.data) }
+      try {
+        const value = JSON.parse(item.data)
+        const type = value?.type ?? item.event
+        const failure = value?.error ?? value?.response?.error ?? value
+        if (this.wire && ['error','response.failed'].includes(type)) {
+          this.wire.error_event = {type,at_ms:timestamp(), code:errorCode(failure?.code),
+            byte_length:raw.length,raw_sha256:sha256(raw)}
+        }
+      }
       catch {
         this.failure = {raw:Buffer.from(raw), boundary, event:item.event,
           start:this.offset, end:this.offset + raw.length, ordinal:this.normalCount + 1}
         return
       }
       this.normalCount++
-      this.normal.update(raw)
+      this.normal?.update(raw)
     }
     this.offset += raw.length
     this.boundaries = this.boundaries.filter(part => part.end > this.offset)
@@ -142,6 +161,7 @@ class FrameObserver {
 
   read({value,done}) {
     if (done) {
+      if (this.wire) this.wire.eof_at_ms = timestamp()
       if (!this.done && !this.failure && this.pending.length) this.record(this.pending, 'eof')
       return
     }
@@ -151,13 +171,19 @@ class FrameObserver {
       this.firstByte ??= at
       this.maxGap = Math.max(this.maxGap, at-this.lastByte)
       this.lastByte = at
+      if (this.wire) {
+        const observedAt = Math.round(performance.timeOrigin + at)
+        this.wire.first_byte_at_ms ??= observedAt
+        this.wire.last_byte_at_ms = observedAt
+        this.wire.bytes_received += chunk.length
+      }
     }
     if (this.done || this.failure || this.oversized) return
-    if (this.config.minimal && this.pending.length + chunk.length > 262144) {
+    if ((this.config.minimal || this.config.metadataOnly) && this.pending.length + chunk.length > 262144) {
       this.pending = Buffer.alloc(0); this.boundaries = []; this.oversized = true
       return
     }
-    this.boundaries.push({start:this.bytesRead,end:this.bytesRead + chunk.length})
+    if (!this.config.metadataOnly) this.boundaries.push({start:this.bytesRead,end:this.bytesRead + chunk.length})
     this.bytesRead += chunk.length
     this.pending = Buffer.concat([this.pending,chunk])
     while (!this.done && !this.failure) {
@@ -172,6 +198,10 @@ class FrameObserver {
     return requestIds(this.response.headers)
   }
 
+  readError(error) {
+    if (this.wire) this.wire.read_error = {at_ms:timestamp(),name:errorCode(error?.name),code:errorCode(error?.code)}
+  }
+
   write(prefix, value) {
     const directory = this.config.directory
     mkdirSync(directory, {recursive:true,mode:0o700})
@@ -182,13 +212,22 @@ class FrameObserver {
   settle(error) {
     if (this.settled) return
     this.settled = true
+    const malformedError = error?.name === 'SyntaxError' && error.message === malformed
+    if (malformedError && this.attempt) {
+      const frame = this.failure
+      this.attempt.sse_failures ??= []
+      this.attempt.sse_failures.push({request_ids:this.requestIds(), status:this.response.status,
+        frame:frame ? {boundary:frame.boundary, byte_length:frame.raw.length,
+          raw_sha256:sha256(frame.raw)} : null})
+    }
+    if (this.config.metadataOnly) return
     if (this.config.timings) this.write('sse-timing-', {
       schema:'htam.dsh-sse-timing.v1', observed_at:new Date().toISOString(), request_ids:this.requestIds(),
       status:this.response.status, scope:'client_response_body_after_headers',
       headers_to_first_byte_ms:this.firstByte === undefined ? null : this.firstByte-this.started,
       max_observed_no_data_ms:Math.max(this.maxGap,performance.now()-this.lastByte),
     })
-    if (error?.name !== 'SyntaxError' || error.message !== malformed) return
+    if (!malformedError) return
     const {status,headers} = this.response
     const frame = this.failure
     const decoded = frame?.raw.toString('utf8')
@@ -215,7 +254,8 @@ export function observeSseDecoder(Stream, lineModule, config) {
     let observer
     try {
       const body = response.body
-      if (body?.getReader && !watched.has(body) && (!config.origin || new URL(response.url).origin === config.origin)) {
+      if (body?.getReader && !watched.has(body) && (!config.metadataOnly || currentRequest.getStore())
+          && (!config.origin || new URL(response.url).origin === config.origin)) {
         observer = new FrameObserver(response,lineModule,config)
         const getReader = body.getReader
         const capture = observer
@@ -225,7 +265,7 @@ export function observeSseDecoder(Stream, lineModule, config) {
             const read = reader.read
             reader.read = function (...args) {
               const pending = read.apply(this,args)
-              pending.then(result => {try {capture.read(result)} catch {}}, () => {})
+              pending.then(result => {try {capture.read(result)} catch {}}, error => {try {capture.readError(error)} catch {}})
               return pending
             }
           } catch {}

@@ -5,7 +5,7 @@
 <a id="todo"></a>
 ## TO DO：发现与排序
 
-[总主](global-main.md)选择有价值的完整包和投入；跨包系统依赖按需读[系统规划](SYSTEM-PLANNING.md)。复用原请求、证据和在途工作；相似名称或同一个需求键只帮助定位，科学等价由 agent 核实。
+[总主](global-main.md)选择有价值的完整包和投入；跨包系统依赖按需读[系统规划](../workflows/dataset-review/system-planning.md)。复用原请求、证据和在途工作；相似名称或同一个需求键只帮助定位，科学等价由 agent 核实。
 
 <a id="plan"></a>
 ## Plan：持续负责与维护原计划

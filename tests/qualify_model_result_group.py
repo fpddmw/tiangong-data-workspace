@@ -154,7 +154,7 @@ def installed_binding(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--runtime', type=Path, default=ROOT / '.control/runtime.json')
+    parser.add_argument('--runtime', type=Path, required=True, help='Explicit CLI runtime binding of the installed tools')
     parser.add_argument('--recovery-runtime', type=Path, help='Switch to this installation after losing the original reply')
     parser.add_argument('--input', type=Path, required=True, help='Original qualified result-group save request')
     args=parser.parse_args()

@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 from unittest.mock import patch
-import harness_entry
+import harness_snapshot
 import harness_tasks
 import test_harness_tasks as fixtures
 
@@ -61,14 +61,14 @@ class TaskContextTests(unittest.TestCase):
 
     def test_missing_store_does_not_initialize_or_demand_registration(self):
         root = self.root / 'missing'
-        value = harness_entry.current(root)
+        value = harness_snapshot.read(root)
         self.assertEqual(value, {'status': 'UNCONFIGURED', 'tasks': []})
         self.assertFalse(root.exists())
 
     def test_explicit_request_cannot_be_queried_under_an_unrelated_task(self):
         self.f.request()
         with self.assertRaisesRegex(ValueError, 'different task'):
-            harness_entry.current(self.root, task_id='other', request_id='request')
+            harness_snapshot.read(self.root, task_id='other', request_id='request')
 
     def test_failure_hook_stays_separate_from_the_new_context_hook(self):
         for event in ('SessionStart', 'UserPromptSubmit'):

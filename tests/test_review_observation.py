@@ -1,19 +1,25 @@
 """Task-scoped native observations never mutate board or platform state."""
 import hashlib
-import importlib.util
 import json
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
+from test_review_adapter import TARGET, fixture, response
 
 SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE / 'bin'))
-SPEC = importlib.util.spec_from_file_location('observe_board', SOURCE / 'bin/business_board.py')
-board = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(board)
-NATIVE = SOURCE / 'materials/packages/four-agent-business-flow-20261029/adapters/native-permission-capture.json'
+from platform_review import observation as board
+SUBJECT = 'process:' + TARGET['id'] + '@' + TARGET['version']
+ACCOUNT_ID = '551c89e9-c4e3-463b-8fc7-68fbe1ec8603'
+
+
+def native_fixture():
+    capture = fixture()
+    capture['profile'] = 'native'
+    capture['source'].update(account_user_id=ACCOUNT_ID, identity={'id': ACCOUNT_ID})
+    capture['responses'][2]['data'][0]['user_id'] = ACCOUNT_ID
+    return capture
 
 
 class ReviewObservationTests(unittest.TestCase):
@@ -22,9 +28,14 @@ class ReviewObservationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.path = 'materials/board.json'
-        self.capture = json.loads(NATIVE.read_text())
+        self.capture = native_fixture()
+        self.capture['responses'][0].update(http_status=403, data=[],
+            error={'code': '42501', 'message': 'REVIEW_ADMIN_REQUIRED'}, completeness={'complete': False})
+        self.capture['responses'][2] = response('qry_membership_get_mine', [
+            {'user_id': self.capture['source']['account_user_id'], 'role': 'data_product_manager'},
+        ])
         self.ref = self.write('materials/original-brief.md', 'Original single plan; no duplicate body.')
-        self.subjects = ['process:01ed7799-ed60-4056-ac8a-97e8dd1cfafb@01.01.001']
+        self.subjects = [SUBJECT]
         self.write(self.path, {'original_record': 'retained'})
         self.capture_ref = self.write('materials/capture.json', self.capture)
 
@@ -38,7 +49,7 @@ class ReviewObservationTests(unittest.TestCase):
         return board.observe_package(self.root, 'observation-task', self.subjects, self.capture_ref['path'],
                                      offline=True, **kwargs)
 
-    def test_real_permission_failure_is_observed_without_any_state_change(self):
+    def test_permission_failure_is_observed_without_any_state_change(self):
         original = (self.root / self.path).read_bytes()
         metadata = (self.root / self.path).stat().st_mtime_ns
         result = self.observe()
@@ -124,26 +135,24 @@ class ReviewObservationTests(unittest.TestCase):
                                expected_account_user_id='00000000-0000-0000-0000-000000000000')
 
 
-    def test_frozen_sara_native_read_does_not_qualify_business_delivery(self):
-        path = 'materials/packages/four-agent-business-flow-20261029/pilot/board.offline.json'
-        capture = 'materials/packages/four-agent-business-flow-20261029/adapters/sara-native-capture.json'
-        before = (SOURCE / path).read_bytes()
-        original = json.loads((SOURCE / path).read_text())
-        subjects = board.find_task(original, 'offline-pilot-record-9')['subject_refs']
-        result = board.observe_package(SOURCE, 'offline-pilot-record-9', subjects, capture, offline=True,
-                                   expected_account_user_id='cb57241e-902b-4a99-bcc6-e1e22bc43520')
+    def test_frozen_native_read_keeps_reviewer_facts_without_certifying_delivery(self):
+        capture = native_fixture()
+        capture['responses'][-1]['completeness']['complete'] = False
+        self.write(self.capture_ref['path'], capture)
+        before = (self.root / self.path).read_bytes()
+        result = self.observe(expected_account_user_id=capture['source']['account_user_id'])
         observation = result['observation']
         self.assertEqual(observation['profile'], 'native')
         self.assertEqual(observation['facts']['account_roles'], ['review-admin'])
         review = observation['facts']['reviews'][0]
-        self.assertEqual(review['review_id'], '76f0be87-9911-4912-9198-8311af0e9a56')
+        self.assertEqual(review['review_id'], 'review-1')
         self.assertEqual(review['state_code'], 1)
         self.assertEqual(len(set(review['active_reviewer_ids'])), 3)
         self.assertEqual([o['state_code'] for o in observation['facts']['opinions']], [0, 0, 0])
         self.assertNotIn('qualified_reviewer_ids',review)
         self.assertNotIn('proposed_business_status',observation)
         self.assertIsNone(observation['cursor'])
-        self.assertEqual((SOURCE / path).read_bytes(), before)
+        self.assertEqual((self.root / self.path).read_bytes(), before)
 
 
 if __name__ == '__main__':

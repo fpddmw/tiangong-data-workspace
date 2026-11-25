@@ -1,6 +1,7 @@
 """Exercise original review ownership, queue withdrawal, and focused frozen inputs."""
 import contextlib
-import hashlib
+from datetime import datetime, timedelta
+from decimal import Decimal
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,18 +9,15 @@ import unittest
 from unittest.mock import patch
 
 from agent_base import identity
-from agent_review import ReviewService
+from scientific_review.author_tools import ReviewService
 import dsh_capacity as capacity
 from execution_lease import atomic_json
 import harness_tasks as tasks
-import review_delta
-import review_queue
+from scientific_review import delta as review_delta
+import review_fixtures as data
+from scientific_review import queue as review_queue
 import run_worker
 import test_agent_runtime as fixture
-
-ROOT=Path(__file__).resolve().parents[1]
-APPLE=ROOT/'materials/packages/tiangong-package-gap-global-main-20261110/apple-scm-reuse-20261110/apple'
-NG=APPLE/'dsh-batch/ng/program-b1b6aec1a0d39046/program-1877c491d8f01547/reviews'
 
 
 class ReviewRevisionTests(unittest.TestCase):
@@ -29,36 +27,35 @@ class ReviewRevisionTests(unittest.TestCase):
 
     def author(self):
         native=identity('deepseek_harness','session','fixture-author',self.root,'1')
-        self.run_intent('author-run','request')
+        launch = data.save(self.home/'author-launch.json', {'run_id':'author-run', 'request_id':'request',
+            'native_cwd':str(self.root), 'work_home':str(self.home)})
+        self.run_intent('author-run','request', launch)
         with tasks.transaction(self.root) as c:
             c.execute('UPDATE work_runs SET native_identity_json=?,outcome=\'running\' WHERE id=\'author-run\'',(tasks._json(native),))
         return native
 
-    def run_intent(self, run_id, request_id):
+    def run_intent(self, run_id, request_id, *extra_refs):
         return tasks.mutate(self.root,'run-intent',self.actor,{'id':run_id,'request_id':request_id,
-            'config_ref':self.ref(self.config_path),'input_refs':[self.input_ref], 'target_host':'deepseek_harness','operation':'start'})
+            'config_ref':self.ref(self.config_path),'input_refs':[self.input_ref,*extra_refs],
+            'target_host':'deepseek_harness','operation':'start'})
 
-    def original_ng(self, ident):
-        source=NG/('program-review:'+ident)/'packet.json'
-        if not source.is_file():self.skipTest('Pinned original NG packets are unavailable')
-        packet=json.loads(source.read_bytes())
-        selected=next(ref for ref in packet['artifact_refs'] if Path(ref['id']).name=='candidate.body.json')
-        raw=Path(selected['path']).read_bytes()
-        self.assertEqual(hashlib.sha256(raw).hexdigest(),selected['sha256'])
-        path=self.home/('ng-'+ident+'.json');path.write_bytes(raw)
+    def candidate(self, name, **fields):
+        path = self.home / (name + '.json')
+        data.save(path, data.process(**fields))
         return path
 
     def packet(self, native, path, **fields):
-        return {'authors':[native],'review_scope':'Review original frozen fixture','artifact_refs':[{'id':str(path),**self.ref(path)}],
+        return {'author_run_id':'author-run','authors':[native],
+                'review_scope':'Review original frozen fixture','artifact_refs':[{'id':str(path),**self.ref(path)}],
                 'evidence_refs':[self.input_ref,self.ref(path)],**fields}
 
     def register(self, parent, packet):
         return run_worker._program_review_request(self.root,SimpleNamespace(actor=self.actor),parent,packet)
 
-    def test_ng_replacement_retires_only_the_named_queued_review(self):
+    def test_replacement_retires_only_the_named_queued_review(self):
         native=self.author();parent=tasks.read_request(self.root,'request')
-        previous=self.original_ng('309ffad95f979f50564e124eb52d0bb6')
-        revised=self.original_ng('e0d5c430da4129a240ed1d61ae90f79e')
+        previous=self.candidate('previous')
+        revised=self.candidate('revised', amount='0.250')
         old=self.register(parent,self.packet(native,previous))
         self.run_intent('old-queued',old['id'])
         queue=capacity._queue(self.root)
@@ -73,7 +70,7 @@ class ReviewRevisionTests(unittest.TestCase):
         before=review_queue.author_review(self.root,parent,native,old['id'])[1]
         with self.assertRaisesRegex(ValueError,'original author'):
             review_queue.author_review(self.root,parent,{**native,'id':'somebody','instance':'somebody'},old['id'])
-        with self.assertRaisesRegex(ValueError,'no returned independent native opinion'):
+        with self.assertRaisesRegex(ValueError,'no complete original opinion'):
             review_delta.baseline(self.root,parent,native,self.packet(native,revised),old['id'])
         first=review_queue.replace(self.root,parent,native,new,old,self.actor)
         self.assertEqual(first['state'],'replaced_before_start')
@@ -91,8 +88,8 @@ class ReviewRevisionTests(unittest.TestCase):
         from concurrent.futures import ThreadPoolExecutor
         from threading import Event
         native=self.author();parent=tasks.read_request(self.root,'request')
-        old=self.register(parent,self.packet(native,self.original_ng('309ffad95f979f50564e124eb52d0bb6')))
-        new=self.register(parent,self.packet(native,self.original_ng('e0d5c430da4129a240ed1d61ae90f79e'),supersedes_review_id=old['id']))
+        old=self.register(parent,self.packet(native,self.candidate('previous')))
+        new=self.register(parent,self.packet(native,self.candidate('revised', amount='0.250'),supersedes_review_id=old['id']))
         self.run_intent('old-racing',old['id'])
         taken=Event()
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -112,7 +109,7 @@ class ReviewRevisionTests(unittest.TestCase):
             self.run_intent('new-withheld',new['id'])
 
     def test_compares_frozen_fields_and_language_without_guessing_science(self):
-        previous=self.original_ng('309ffad95f979f50564e124eb52d0bb6')
+        previous=self.candidate('before')
         before=json.loads(previous.read_bytes())
         previous_exchanges=before['processDataSet']['exchanges']['exchange']
         ref=before['processDataSet']['processInformation']['dataSetInformation']
@@ -149,56 +146,61 @@ class ReviewRevisionTests(unittest.TestCase):
         self.assertEqual(spelling['fields'][0]['changed_languages'],['en'])
         self.assertEqual(spelling['exchange_diff']['changes'],[])
 
-    def test_named_frozen_scientific_cases_keep_calculations_and_wording_distinct(self):
-        from decimal import Decimal
-        from lca_gate_projection import declared_process_basis, tiangong_self_uri
-        material=APPLE/'material-dispatch-20261115'
-        salts=material/'program-38e55011e83b6769/reviews'
-        rounds=['5f241439b6f783dbf8db0306058fb7b0','3a314bf5d32fb447a04bc298199c5f25','15d1dbb4fc771c38902bcd427a8dd0dc']
-        if not (salts/('program-review:'+rounds[0])).exists():self.skipTest('Pinned SALTS originals are unavailable')
-        packets=[json.loads((salts/('program-review:'+ident)/'packet.json').read_bytes()) for ident in rounds]
-        for before,after in ((packets[0],packets[1]),(packets[0],packets[2]),(packets[1],packets[2])):
-            report=review_delta.compare(ROOT,before,after)
-            self.assertFalse(report['alignment_gaps'])
-            changed=next(x for x in report['changes'] if x['new_identity'][0]=='process')
-            self.assertEqual(changed['self_uri']['after']['status'],'matches')
-            self.assertTrue(any(row.get('changed_languages') for row in changed['fields']))
-            self.assertTrue(report['known_consumers']['new'])
-        retained=review_delta.packet_bodies(ROOT,packets[-1])[0]
-        record=next(item['body']['processDataSet'] for key,item in retained.items() if key[0]=='process')
-        basis=record['processInformation']['quantitativeReference']['functionalUnitOrOther']
-        self.assertIn('收货态',json.dumps(basis,ensure_ascii=False))
-        self.assertIn('**干**黑粉',json.dumps(record['exchanges']['exchange'][0]['generalComment'],ensure_ascii=False))
-        al=APPLE/'program-674929badbf1354a/work/r42-snapshot-20261118'
-        path=next(al.glob('process-3f869*.json'))
-        key,item=next(iter(review_delta.packet_bodies(ROOT,{'artifact_refs':[self.ref(path)]})[0].items()))
-        process=item['body']['processDataSet']
-        self.assertIn('Zn 5.5 kg',json.dumps(declared_process_basis(process,key)['title']))
-        zinc=next(x for x in process['exchanges']['exchange'] if str(x['@dataSetInternalID'])=='2')
-        self.assertEqual(Decimal('5.5')/100*Decimal('1000'),Decimal(zinc['meanAmount']))
-        self.assertEqual(tiangong_self_uri('https://example.invalid/dataset/'+key[1],*key)['status'],'not_an_exact_tiangong_locator')
-        index=json.loads((material/'ls-review-f0f1423e70c2ad2fc546473f4ce69258-1422.json').read_bytes())
-        note=Path(index['management_return']['result_ref']['path']).read_text()
-        self.assertIn('1648.816+铁红27385.629+FeCl₂442.149',note)
-        self.assertEqual(sum(map(Decimal,('1648.816','27385.629','442.149'))),Decimal('29476.594'))
+    def test_frozen_versions_keep_calculation_language_and_consumers_distinct(self):
+        from dataset_checks.projection import tiangong_self_uri
+        old_content, new_content = data.revision_documents()
+        before, after = self.home/'before.json', self.home/'after.json'
+        data.save(before, old_content)
+        data.save(after, new_content)
+        report = review_delta.compare(self.root, self.packet(None, before), self.packet(None, after))
+        self.assertFalse(report['alignment_gaps'])
+        self.assertEqual(len(report['changes']), 2)
+        process = next(item for item in report['changes'] if item['new_identity'][0] == 'process')
+        flow = next(item for item in report['changes'] if item['new_identity'][0] == 'flow')
+        self.assertEqual(flow['old_identity'][2], data.VERSION)
+        self.assertEqual(flow['new_identity'][2], '00.00.002')
+        self.assertEqual(process['self_uri']['before']['status'], 'differs')
+        self.assertEqual(process['self_uri']['after']['status'], 'matches')
+        self.assertTrue(any(item.get('changed_languages') == ['zh'] for item in process['fields']))
+        qty = next(row for row in process['exchange_diff']['changes'] if row['exchange_id'] == '2')
+        self.assertEqual(Decimal(qty['before']['resulting_amount']), Decimal(125)/1000)
+        self.assertEqual(Decimal(qty['after']['resulting_amount']), Decimal(250)/1000)
+        self.assertEqual(process['reference_basis']['after']['reference_exchanges'][0]['resulting_amount'], '1')
+        self.assertTrue(any(item['target'] == flow['new_identity'] for item in report['known_consumers']['new']))
+        uri = 'https://example.invalid/dataset/' + data.PROCESS_ID
+        self.assertEqual(tiangong_self_uri(uri, *process['new_identity'])['status'], 'not_an_exact_tiangong_locator')
 
-    def test_a02_original_readbacks_follow_the_frozen_request_cutoff(self):
-        from a02_review_verifier import A02_PACKET, read_exact, verify
-        from review_facts import collect
-        if not (ROOT/A02_PACKET).is_file() or not (ROOT/'.control/harness.sqlite').is_file():
-            self.skipTest('Pinned A02 originals and work ledger are required')
-        review = tasks.read_request(ROOT, Path(A02_PACKET).parent.name)
-        raw = read_exact(review['input_ref'])
-        parent = tasks.read_request(ROOT, review['parent_request_id'])
+    def test_frozen_review_readbacks_follow_the_request_cutoff(self):
+        from scientific_review.facts import collect
+        native = self.author()
+        parent = tasks.read_request(self.root, 'request')
+        started = datetime.fromisoformat(tasks.read_run(self.root, 'author-run')['created_at'])
+        archive = self.home/'runs/author-run/delivery'
+        sent = (started + timedelta(seconds=2)).isoformat()
+        early = data.readback(archive, 'before', run_id='author-run', request_id='request',
+                              finished_at=(started + timedelta(seconds=1)).isoformat(), body=data.process())
+        late_time = (started + timedelta(seconds=3)).isoformat()
+        late = data.readback(archive, 'after', run_id='author-run', request_id='request',
+                             finished_at=late_time, body=data.process(amount='0.250'))
+        with patch('run_worker.runtime.now', return_value=sent):
+            review = self.register(parent, self.packet(native, self.candidate('original')))
+        raw = Path(review['input_ref']['path']).read_bytes()
         packet = json.loads(raw)
-        at_request = collect(ROOT, parent, packet, review['created_at'])
-        self.assertEqual(verify(at_request), 'A02-facts-verified')
-        later = collect(ROOT, parent, packet, '2026-11-19T16:38:24.000000+00:00')
-        self.assertEqual([p['readback']['status'] for p in later['processes']], ['complete_differs']*2)
-        self.assertEqual([len(p['readback']['changed_pointers']) for p in later['processes']], [3, 2])
-        for initial, current in zip(at_request['processes'], later['processes']):
-            self.assertEqual(initial['frozen_ref'], current['frozen_ref'])
-            self.assertEqual(initial['exchanges'], current['exchanges'])
-            self.assertNotEqual(initial['readback']['body_ref']['sha256'], current['readback']['body_ref']['sha256'])
-        self.assertEqual(read_exact(review['input_ref']), raw)
+        facts_raw = Path(packet['facts_ref']['path']).read_bytes()
+        facts = json.loads(facts_raw)
+        self.assertEqual(facts['as_of'], sent)
+        opening, = facts['processes']
+        self.assertEqual(opening['readback']['status'], 'complete_match')
+        self.assertEqual(opening['readback']['body_ref'], early)
+        later, = collect(self.root, parent, packet, late_time)['processes']
+        self.assertEqual(later['readback']['status'], 'complete_differs')
+        self.assertEqual(later['readback']['body_ref'], late)
+        self.assertEqual(later['readback']['changed_pointers'], [
+            '/processDataSet/exchanges/exchange/1/meanAmount',
+            '/processDataSet/exchanges/exchange/1/resultingAmount',
+        ])
+        self.assertEqual(later['frozen_ref'], opening['frozen_ref'])
+        self.assertEqual(later['exchanges'], opening['exchanges'])
+        self.assertEqual(Path(packet['facts_ref']['path']).read_bytes(), facts_raw)
+        self.assertEqual(Path(review['input_ref']['path']).read_bytes(), raw)
 

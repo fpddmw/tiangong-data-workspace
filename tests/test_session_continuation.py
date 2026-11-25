@@ -84,14 +84,14 @@ class LegacyContinuationTests(unittest.TestCase):
                             'native_goal': {'id': 'original-goal', 'phase': 'active', 'revision': 7}}
         self.native_query.write_text(json.dumps(self.observation))
         shim = self.home / 'node-shim'
-        shim.write_text('#!' + sys.executable + '\n' + '''import json,os,sys
+        from python_executable_fixture import python_executable
+        python_executable(shim, '''import json,os,sys
 from pathlib import Path
 if '--query' in sys.argv:
     print(Path(os.environ['HTAM_LEGACY_QUERY']).read_text())
 else:
     os.execv(sys.executable,[sys.executable,*sys.argv[1:]])
 ''')
-        shim.chmod(0o700)
         config = json.loads(self.config_path.read_bytes())
         config['hosts']['dsh']['node'] = str(shim)
         self.config_path.write_text(json.dumps(config))

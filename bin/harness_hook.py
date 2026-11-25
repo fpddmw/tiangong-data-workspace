@@ -19,7 +19,7 @@ import sys
 import tempfile
 
 import harness_tasks as tasks
-import harness_sessions as sessions
+from task_ledger import sessions
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = 'data-workspace.tool-observation.v1'

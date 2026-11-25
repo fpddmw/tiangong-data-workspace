@@ -1,4 +1,4 @@
-"""Workspace DSH admission and the optional provider-specific four-seat policy.
+"""Workspace host admission, with independent Devin and DSH role queues.
 
 The queue owns waiting/reservations, never business or native execution state.
 Original run metadata and OS ownership determine occupancy, including old runs.
@@ -9,8 +9,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import time
+from uuid import uuid4
 
 import execution_lease as execution
 import harness_tasks as tasks
@@ -21,16 +23,60 @@ POLICY = 'six-per-role-fifo-v1'
 PREVIOUS_POLICY = 'unified-four-fifo-v1'
 PILOT_POLICY = 'provider-four-eligible-fifo-v1'
 PILOT_LIMITS = {'author':3,'review':3,'total':4}
+EIGHT_SEAT_POLICY = 'provider-eight-eligible-fifo-v1'
+PROVIDER_LIMITS = {PILOT_POLICY:PILOT_LIMITS, EIGHT_SEAT_POLICY:{'author':5,'review':5,'total':8}}
 POLL_SECONDS = .2
 OBSERVATION_SECONDS = 1.
-OBSERVATION_SCHEMA = 'htam.dsh-execution-observation.v3'
+OBSERVATION_SCHEMA = 'htam.dsh-execution-observation.v4'
 SCHEMA = 'htam.dsh-capacity.v1'
+DEVIN_OBSERVATION_SCHEMA = 'htam.devin-execution-observation.v1'
 
 
-def _paths(root):
+DSH = 'deepseek_harness'
+DEVIN = 'devin_cli'
+POOL_NAMES = {DSH: 'dsh', DEVIN: 'devin'}
+
+
+def _paths(root, host=DSH):
     control = Path(root) / '.control'
-    return (control / 'dsh-capacity.json', control / 'dsh-capacity.lock',
-            control / 'dsh-capacity-observed.json')
+    name = POOL_NAMES[host] + '-capacity'
+    return tuple(control / (name + suffix) for suffix in ('.json', '.lock', '-observed.json'))
+
+
+def _accounting_home(root, host):
+    return _paths(root,host)[0].with_suffix('.pending')
+
+
+def flush_accounting(root,host=DSH):
+    """Try a brief writer acquisition. The original transition time survives retries."""
+    paths = sorted(_accounting_home(root,host).glob('*.json'))
+    if not paths:
+        return True
+    batch = paths[:32]
+    facts = [fact for path in batch if (fact := _read(path)) is not None]
+    try:
+        with tasks.transaction(root,timeout=.025) as c:
+            for fact in facts:
+                actor=tasks._actor(root,fact['actor'],observed=True)
+                tasks._record_capacity(c,root,actor,fact['payload'],observed_at=fact['at'])
+    except sqlite3.OperationalError as exc:
+        if not tasks.write_contention(exc):
+            raise
+        return False
+    for path in batch:
+        path.unlink(missing_ok=True)
+    return len(batch)==len(paths)
+
+
+def record_capacity(root,actor,payload,*,host=DSH):
+    # The original queue lock orders these receipts. Queue transitions remain
+    # available even if SQLite cannot publish an observation at that instant.
+    at=tasks._now()
+    path=_accounting_home(root,host)/(at+'-'+uuid4().hex+'.json')
+    execution.atomic_json(path,{'at':at,'actor':actor,'payload':payload})
+    if not flush_accounting(root,host):
+        from dsh_recovery_host import wake
+        wake(Path(root))
 
 
 def _read(path, default=None):
@@ -40,27 +86,41 @@ def _read(path, default=None):
         return default
 
 
-def _queue(root):
-    value = _read(_paths(root)[0], {'schema': SCHEMA, 'policy': POLICY, 'next_sequence': 1, 'entries': []})
-    if value.get('schema') != SCHEMA or not isinstance(value.get('entries'), list):
-        raise ValueError('Original DSH capacity queue is unreadable; preserve it for recovery.')
-    if value.get('policy')==PILOT_POLICY and (not isinstance(value.get('pilot_provider'),str) or not value['pilot_provider']):
+def _queue(root, host=DSH):
+    schema = SCHEMA if host == DSH else 'htam.devin-capacity.v1'
+    value = _read(_paths(root, host)[0], {'schema': schema, 'policy': POLICY, 'next_sequence': 1, 'entries': []})
+    if value.get('schema') != schema or not isinstance(value.get('entries'), list):
+        raise ValueError(f'Original {host} capacity queue is unreadable; preserve it for recovery.')
+    if value.get('policy') in PROVIDER_LIMITS and (not isinstance(value.get('pilot_provider'),str) or not value['pilot_provider']):
         raise ValueError('The pilot queue is missing its original provider identity.')
     return value
 
 
 def policy_ready(queue):
-    return queue.get('policy') in (POLICY,PILOT_POLICY) or (queue.get('policy')==PREVIOUS_POLICY
+    return queue.get('policy') in (POLICY,*PROVIDER_LIMITS) or (queue.get('policy')==PREVIOUS_POLICY
         and queue.get('admission_policy')==POLICY)
 
 
 def is_pilot_provider(root, provider):
     queue = _queue(root)
-    return bool(provider and queue.get('policy') == PILOT_POLICY and queue.get('pilot_provider') == provider)
+    return bool(provider and queue.get('policy') in PROVIDER_LIMITS and queue.get('pilot_provider') == provider)
+
+
+def recovery_enabled(root, provider):
+    if not provider:
+        return False
+    queue = _queue(root)
+    return recovery_managed(root, provider) or (
+        queue.get('policy') in PROVIDER_LIMITS and queue.get('pilot_provider') == provider)
+
+
+def recovery_managed(root, provider):
+    config = _read(Path(root) / '.control/dsh-recovery.json', {})
+    return bool(provider and config.get('provider') == provider)
 
 
 def current_ticket(entry):
-    return entry.get('policy') in (POLICY,PILOT_POLICY) or entry.get('admission_policy') in (POLICY,PILOT_POLICY)
+    return entry.get('policy') in (POLICY,*PROVIDER_LIMITS) or entry.get('admission_policy') in (POLICY,*PROVIDER_LIMITS)
 
 
 def _finish_protocol_handoff(queue):
@@ -76,8 +136,8 @@ def _finish_protocol_handoff(queue):
 
 
 @contextlib.contextmanager
-def _lock(root, guard=lambda: None):
-    path = _paths(root)[1]
+def _lock(root, guard=lambda: None, *, host=DSH):
+    path = _paths(root, host)[1]
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
     os.set_inheritable(fd, False)
@@ -142,14 +202,14 @@ def _provider(root, config_ref, role):
     return config.get('providers',{}).get(key,{}).get('dsh_provider')
 
 
-def _catalog(root, prior):
+def _catalog(root, prior, host=DSH):
     """Cache only exact original launch coordinates, never live occupancy."""
     from harness_package import launch_spec
     result = {}
     with contextlib.closing(tasks._connect(root, True)) as c:
         rows = c.execute('''SELECT r.*,q.independent,q.recipient_role FROM work_runs r
-            JOIN work_requests q ON q.id=r.request_id WHERE r.target_host='deepseek_harness'
-            ORDER BY r.created_at,r.id''').fetchall()
+            JOIN work_requests q ON q.id=r.request_id WHERE r.target_host=?
+            ORDER BY r.created_at,r.id''', (host,)).fetchall()
     for raw in rows:
         run = tasks._decode(raw)
         signature = hashlib.sha256(tasks._json([run['input_refs'], run.get('native_identity'),
@@ -166,9 +226,11 @@ def _catalog(root, prior):
             spec = launch_spec(root, run)
         native = run.get('native_identity') or {}
         native_id = native.get('id') or spec.get('requested_session_id')
+        writer_paths, provider = [], None
         try:
-            writer_paths = _writer_paths(root, run['config_ref'], native_id)
-            provider = _provider(root,run['config_ref'],'scientific_reviewer' if run['independent'] else run['recipient_role'])
+            if host == DSH:
+                writer_paths = _writer_paths(root, run['config_ref'], native_id)
+                provider = _provider(root,run['config_ref'],'scientific_reviewer' if run['independent'] else run['recipient_role'])
         except (OSError, ValueError):
             writer_paths = []
             provider = None  # Unknown occupancy still consumes a pilot reservation.
@@ -183,12 +245,78 @@ def _writer(path):
     return execution.native_writer(path)
 
 
-def _observe(root, *, cached=True, save=False):
+def _never_admitted(root, run_id, ticket, metadata):
+    if ticket:
+        return (ticket['phase'] == 'queued' and not ticket.get('wait_token')
+                and ticket['manager'] == metadata.get('manager'))
+    with contextlib.closing(tasks._connect(root, True)) as connection:
+        last = connection.execute(
+            "SELECT json_extract(payload_json, '$.phase') FROM work_run_events "
+            "WHERE run_id=? AND kind='capacity' ORDER BY id DESC LIMIT 1", (run_id,)).fetchone()
+    return bool(last and last[0] in ('abandoned', 'cancelled_before_start'))
+
+
+def _observe_devin(root, old):
+    # ACP persists every run's original manager, child and client tool groups.
+    # Existing pre-admission runs have these same leases, including on resume.
+    catalog = _catalog(root, old.get('catalog', {}), DEVIN)
+    processes, boot = _processes(), execution.boot_identity()
+    occupied, finished, exited_files = [], [], {}
+    tickets = {e['run_id']: e for e in _queue(root, DEVIN)['entries']}
+    for rid, row in catalog.items():
+        path = Path(row['execution_path']) if row['execution_path'] else None
+        reason = 'launch_ownership_unverified'
+        if path:
+            try:
+                stamp = path.stat()
+                key = [stamp.st_ino, stamp.st_mtime_ns]
+                if old.get('exited_files', {}).get(rid) == key:
+                    finished.append(rid)
+                    exited_files[rid] = key
+                    continue
+                meta = json.loads(path.read_bytes())
+                if (meta.get('run_id'), meta.get('request_id')) != (rid, row['request_id']):
+                    raise ValueError('Execution metadata belongs to another run')
+                if meta.get('phase') == 'settled':
+                    state = 'exited'
+                elif _matches(meta.get('child'), processes, boot) is True:
+                    state, reason = 'active', 'original_native_process'
+                else:
+                    state = execution.execution_observation(path)['state']
+                    if (state == 'unknown' and meta.get('phase') == 'launch_intent'
+                            and not meta.get('child') and not meta.get('tools')
+                            and _matches(meta.get('manager'), processes, boot) is False):
+                        if _never_admitted(root, rid, tickets.get(rid), meta):
+                            state = 'exited'  # The original transport died before obtaining a seat.
+                    if state == 'active':
+                        reason = ('original_manager_starting' if not meta.get('child')
+                                  else 'original_manager_or_process_group')
+                if state == 'exited':
+                    finished.append(rid)
+                    exited_files[rid] = key
+                    continue
+            except (OSError, ValueError):
+                pass  # Keep a reservation while execution ownership is unknown.
+        occupied.append({**row, 'reason': reason})
+    return {'schema': DEVIN_OBSERVATION_SCHEMA, 'at': time.time(), 'boot': boot,
+            'occupied': occupied, 'catalog': catalog, 'processes': list(processes.values()),
+            'marked_runs': [], 'finished_runs': finished, 'exited_files': exited_files,
+            'attribution_issues': []}
+
+
+def _observe(root, *, cached=True, save=False, host=DSH):
     """One shared short-lived OS scan. No native query or model invocation."""
-    path = _paths(root)[2]
+    path = _paths(root, host)[2]
     old = _read(path, {})
-    if cached and old.get('schema')==OBSERVATION_SCHEMA and old.get('boot') == execution.boot_identity() and 0 <= time.time() - old.get('at', 0) < OBSERVATION_SECONDS:
+    schema = OBSERVATION_SCHEMA if host == DSH else DEVIN_OBSERVATION_SCHEMA
+    if cached and old.get('schema')==schema and old.get('boot') == execution.boot_identity() and 0 <= time.time() - old.get('at', 0) < OBSERVATION_SECONDS:
         return old
+    if host == DEVIN:
+        value = _observe_devin(root, old)
+        if save:
+            execution.atomic_json(path, value)
+        return value
+    sampled_from = time.time()
     processes, boot = _processes(), execution.boot_identity()
     by_session, by_run, checked, markers_by_pid = {}, {}, {}, {}
     for _ in range(3):
@@ -217,7 +345,8 @@ def _observe(root, *, cached=True, save=False):
             if ident := markers.get('HTAM_DSH_CAPACITY_RUN_ID'):
                 by_run.setdefault(ident, []).append(pid)
     catalog = _catalog(root, old.get('catalog', {}))
-    occupied, finished = [], []
+    occupied, finished, closed_sessions = [], [], set()
+    groups = {p['pgid'] for p in processes.values()}
     for record in catalog.values():
         try:
             meta = _read(Path(record['execution_path']), {}) if record['execution_path'] else {}
@@ -225,16 +354,29 @@ def _observe(root, *, cached=True, save=False):
             meta = {}  # A broken legacy receipt alone is not actual execution.
         child, manager = meta.get('child'), meta.get('manager')
         native = record['native_session']
+        if (meta.get('run_id') == record['run_id'] and meta.get('request_id') == record['request_id']
+                and meta.get('model_closed') is True):
+            finished.append(record['run_id'])
+            if native and (_matches(child, processes, boot) is True or by_run.get(record['run_id'])):
+                closed_sessions.add(native)
+            continue
         reason = None
         if _matches(child, processes, boot) is True:
             reason = 'original_native_process'
-        elif child and child.get('boot') == boot and any(p['pgid'] == child.get('pgid') for p in processes.values()):
+        elif (child and child.get('boot') == boot and child.get('pgid') in groups
+              and not execution.reused_group_leader(child, {**processes.get(child['pid'], {}), 'boot': boot})):
             reason = 'launch_ownership_unverified' if child['pid'] in processes else 'original_process_group'
         elif by_run.get(record['run_id']) or native and by_session.get(native):
             reason = 'original_session_or_run_process'
         elif not child and meta.get('phase') != 'settled' and _matches(manager, processes, boot) is not False:
             reason = 'original_manager_starting' if _matches(manager,processes,boot) is True else 'launch_ownership_unverified'
-        else:
+        elif child and meta.get('phase') == 'spawned' and manager and _matches(manager, processes, boot) is not False:
+            # The OS sample can predate the child's registration. Only settle
+            # this live manager's ticket after an exact, fresh group check.
+            state = execution.original_group(child)['state']
+            if state != 'exited':
+                reason = 'original_process_group' if state == 'active' else 'launch_ownership_unverified'
+        if reason is None:
             writers=[_writer(path) for path in record.get('writer_paths',[])]
             if True in writers:reason='native_writer_owner_unattributed'
             elif None in writers:reason='native_writer_ownership_unverified'
@@ -242,27 +384,31 @@ def _observe(root, *, cached=True, save=False):
             occupied.append({**record, 'reason': reason})
         elif child or meta.get('phase') == 'settled':
             finished.append(record['run_id'])
-    value = {'schema':OBSERVATION_SCHEMA,'at': time.time(), 'boot': boot, 'occupied': occupied, 'catalog': catalog,
+    value = {'schema':OBSERVATION_SCHEMA,'at': time.time(), 'sampled_from': sampled_from,
+             'boot': boot, 'occupied': occupied, 'catalog': catalog,
              'processes': list(processes.values()), 'marked_runs': sorted(by_run),
+             'closed_model_sessions': sorted(closed_sessions),
              'finished_runs': finished, 'attribution_issues': issues}
     if save:
         execution.atomic_json(path, value)
     return value
 
 
-def _pending_review(entry):
-    return entry['phase'] in ('waiting_review', 'queued') and bool(entry.get('wait_token'))
+def _pending_wait(entry):
+    return entry['phase'] in ('waiting_review', 'waiting_retry', 'queued') and bool(entry.get('wait_token'))
 
 
 def _wait_metadata(queue, entry):
-    if entry.get('policy') != queue.get('policy') or entry['kind'] != 'author':
+    retry = entry.get('model_retry') is True
+    if entry.get('policy') != queue.get('policy') or not (retry or entry['kind'] == 'author'):
         return None
     try:
         meta = _read(Path(entry['execution_path']), {})
         wait = meta.get('capacity_wait') or {}
         if (meta.get('run_id') == entry['run_id'] and meta.get('request_id') == entry['request_id']
-                and meta.get('manager') == entry['manager'] and wait.get('source') == 'controlled_review_result'
-                and wait.get('token') == entry['wait_token'] and wait.get('review_id') == entry.get('review_id')):
+                and meta.get('manager') == entry['manager'] and wait.get('token') == entry['wait_token']
+                and (wait.get('source') == 'controlled_model_retry' if retry else
+                     wait.get('source') == 'controlled_review_result' and wait.get('review_id') == entry.get('review_id'))):
             return meta
     except (OSError, ValueError, AttributeError):
         pass
@@ -270,17 +416,17 @@ def _wait_metadata(queue, entry):
 
 
 def _controlled_waits(queue, observed):
-    """Only a live trusted manager plus its matching queue/lease wait can yield."""
+    """Match the wait to its execution lease and the native reentry boundary."""
     if not policy_ready(queue):
         return {}
     processes = {p['pid']: p for p in observed['processes']}
     return {e['run_id']: {**e, 'execution_protected': True, 'seat_held': False}
-            for e in queue['entries'] if _pending_review(e)
-            and _matches(e['manager'], processes, observed['boot']) is True
-            and _wait_metadata(queue, e) and execution.matches(e['manager']) is True}
+            for e in queue['entries'] if _pending_wait(e) and _wait_metadata(queue, e)
+            and (e.get('model_retry') is True or _matches(e['manager'], processes, observed['boot']) is True
+                 and execution.matches(e['manager']) is True)}
 
 
-def _exited_review_waits(root, queue, observed):
+def _exited_review_waits(root, queue, observed, host=DSH):
     """Prove that a wait cannot return to its original execution owner."""
     if not policy_ready(queue) or not observed['boot'] or observed['attribution_issues']:
         return {}
@@ -290,7 +436,7 @@ def _exited_review_waits(root, queue, observed):
     exited = {}
     for entry in queue['entries']:
         run_id, session = entry['run_id'], entry.get('native_session')
-        if (not _pending_review(entry) or run_id not in finished or not session or session in occupied_sessions
+        if (not _pending_wait(entry) or run_id not in finished or not session or session in occupied_sessions
                 or max(entry['queued_at'], entry.get('manager_attached_at', 0)) >= observed['at']
                 or _matches(entry['manager'], processes, observed['boot']) is not False):
             continue
@@ -310,7 +456,7 @@ def _exited_review_waits(root, queue, observed):
             if native != meta.get('native_identity') or native.get('id') != session:
                 continue
             # A cached catalog may predate creation of the native writer lock.
-            if any(_writer(p) is not False for p in _writer_paths(root, run['config_ref'], session)):
+            if host == DSH and any(_writer(p) is not False for p in _writer_paths(root, run['config_ref'], session)):
                 continue
             fact = execution.execution_observation(entry['execution_path'])
         except (OSError, ValueError, KeyError, TypeError):
@@ -322,18 +468,18 @@ def _exited_review_waits(root, queue, observed):
     return exited
 
 
-def _retire_exited_waits(root, queue, actor, waits, *, authority=None):
+def _retire_exited_waits(root, queue, actor, waits, *, authority=None, host=DSH):
     # The caller holds the original capacity lock. Keep business and execution
     # receipts intact, including an unknown outcome or an original stop.
     for entry in sorted(queue['entries'], key=lambda e: e['sequence']):
         if entry['run_id'] not in waits:
             continue
         payload = {'id': entry['run_id'], 'phase': 'abandoned', 'kind': entry['kind'],
-                   'sequence': entry['sequence'], 'queue_source': str(_paths(root)[0]),
-                   'reason': 'review_wait_execution_exited'}
+                   'sequence': entry['sequence'], 'queue_source': str(_paths(root, host)[0]),
+                   'reason': 'model_retry_execution_exited' if entry.get('model_retry') else 'review_wait_execution_exited'}
         if authority is not None:
             payload['authority_ref'] = authority
-        tasks.mutate(root, 'run-capacity', actor, payload)
+        record_capacity(root, actor, payload, host=host)
         queue['entries'].remove(entry)
 
 
@@ -343,23 +489,29 @@ def _effective(queue, observed, *, suspended=None, exited_waits=()):
     queued = {e['run_id'] for e in queue['entries'] if e['phase'] in ('queued','handoff')}
     if suspended is None:
         suspended = _controlled_waits(queue, observed)
-    suspended_sessions={e['native_session'] for e in suspended.values() if e.get('native_session')}
+    admitted_sessions = {e.get('native_session') for e in queue['entries'] if e['phase'] == 'admitted'}
+    suspended_sessions = {e['native_session'] for e in suspended.values() if e.get('native_session')} - admitted_sessions
+    closed_sessions = set(observed.get('closed_model_sessions', ())) - admitted_sessions
     for row in observed['occupied']:
         if row['run_id'] in suspended or row.get('native_session') in suspended_sessions:continue
+        if row.get('native_session') in closed_sessions and row['reason'] in (
+                'original_session_or_run_process', 'native_writer_owner_unattributed', 'native_writer_ownership_unverified'):
+            continue
         if row['run_id'] in queued and row['reason'] == 'original_manager_starting':
             continue
         key = row['native_session'] or row['run_id']
         items[key] = row
     for entry in queue['entries']:
         owner = _matches(entry['manager'], processes, boot)
-        if max(entry['queued_at'],entry.get('manager_attached_at',0)) >= observed['at']:
+        if max(entry['queued_at'], entry.get('manager_attached_at', 0), entry.get('admitted_at', 0)) >= observed.get('sampled_from', observed['at']):
             owner = True  # This ticket was born after the shared OS snapshot.
         key = entry.get('native_session') or entry['run_id']
+        if entry['run_id'] in exited_waits:
+            stale.append(entry)
+            continue
         if entry['run_id'] in suspended or entry['phase']=='handoff':continue
-        if _pending_review(entry):
-            if entry['run_id'] in exited_waits:
-                stale.append(entry)
-            elif key not in items and not any(row['run_id'] == entry['run_id'] for row in items.values()):
+        if _pending_wait(entry):
+            if key not in items and not any(row['run_id'] == entry['run_id'] for row in items.values()):
                 items[key] = {**entry, 'reason': 'launch_ownership_unverified'}
             continue
         if entry['phase'] == 'queued':
@@ -369,7 +521,8 @@ def _effective(queue, observed, *, suspended=None, exited_waits=()):
             continue
         if key in items or any(row['run_id'] == entry['run_id'] for row in items.values()):
             continue
-        if entry['run_id'] in observed.get('finished_runs', []):
+        if (entry['run_id'] in observed.get('finished_runs', [])
+                and entry.get('admitted_at', 0) < observed.get('sampled_from', observed['at'])):
             stale.append(entry)
             continue
         if owner is not False or entry['run_id'] in observed['marked_runs']:
@@ -409,24 +562,24 @@ def _pilot_counts(active, provider):
 def _waiting_reason(entry, counts, queue, suspended, active=()):
     if not policy_ready(queue):return 'policy_handoff_required'
     if entry['phase']=='handoff':return 'transport_handoff_pending'
-    if _pending_review(entry) and entry['run_id'] not in suspended:
-        return 'review_reentry_ownership_unverified'
-    if queue.get('policy')==PILOT_POLICY:
-        if entry.get('admission_policy')!=PILOT_POLICY:
+    if _pending_wait(entry) and entry['run_id'] not in suspended:
+        return 'retry_reentry_ownership_unverified' if entry.get('model_retry') else 'review_reentry_ownership_unverified'
+    if queue.get('policy') in PROVIDER_LIMITS:
+        if entry.get('admission_policy')!=queue['policy']:
             return 'legacy_manager_cannot_use_pilot'
         if counts['total']>=LIMITS['total']:return 'workspace_total_capacity'
         if counts[entry['kind']]>=LIMITS[entry['kind']]:return entry['kind']+'_capacity'
         provider=queue['pilot_provider']
         is_pilot=entry.get('provider')==provider
         usage=_pilot_counts(active,provider) if is_pilot else counts
-        limits=PILOT_LIMITS if is_pilot else LIMITS
+        limits=PROVIDER_LIMITS[queue['policy']] if is_pilot else LIMITS
         if usage['total']>=limits['total']:return 'provider_total_capacity' if is_pilot else 'workspace_total_capacity'
         if usage[entry['kind']]>=limits[entry['kind']]:return entry['kind']+'_capacity'
         for ahead in queue['entries']:
             if (ahead['sequence']>=entry['sequence'] or ahead['phase']!='queued'
-                    or ahead.get('admission_policy')!=PILOT_POLICY
+                    or ahead.get('admission_policy')!=queue['policy']
                     or counts[ahead['kind']]>=LIMITS[ahead['kind']]
-                    or _pending_review(ahead) and ahead['run_id'] not in suspended):
+                    or _pending_wait(ahead) and ahead['run_id'] not in suspended):
                 continue
             if is_pilot and ahead.get('provider')==provider and usage[ahead['kind']]<limits[ahead['kind']]:
                 return 'earlier_eligible_provider_request'
@@ -453,55 +606,58 @@ def _waiting_reason(entry, counts, queue, suspended, active=()):
     return None
 
 
-def snapshot(root):
+def snapshot(root, host=DSH):
     """Read-only global query; no queue cleanup or business mutation."""
     root = Path(root).resolve()
-    queue = _queue(root)
+    queue = _queue(root, host)
     try:
-        observed = _observe(root)
+        observed = _observe(root, host=host)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         waiting = [{**e, 'waiting_reason': 'execution_ownership_unavailable'}
                    for e in queue['entries'] if e['phase'] in ('queued','handoff')]
-        return {'schema': SCHEMA, 'workspace': str(root), 'limits': LIMITS,
+        return {'schema': queue['schema'], 'host': host, 'workspace': str(root), 'limits': LIMITS,
                 'counts': {'occupied': None, 'queued': {k: sum(e['kind'] == k for e in waiting) for k in ('author', 'review')}},
                 'active': None, 'waiting': waiting, 'observation_status': 'unknown',
                 'reason': type(exc).__name__ + ': execution ownership could not be observed; no new admission',
-                'queue_source': str(_paths(root)[0])}
+                'queue_source': str(_paths(root, host)[0])}
     suspended = _controlled_waits(queue, observed)
-    exited_waits = _exited_review_waits(root, queue, observed)
+    exited_waits = _exited_review_waits(root, queue, observed, host)
     active, counts, stale = _effective(queue, observed, suspended=suspended, exited_waits=exited_waits)
     stale_ids = {e['run_id'] for e in stale}
     pending_queue = {**queue, 'entries': [e for e in queue['entries'] if e['run_id'] not in stale_ids]}
     waiting = [{**e, 'waiting_reason': _waiting_reason(e, counts, pending_queue, suspended, active) or 'awaiting_fifo_admission'}
                for e in pending_queue['entries'] if e['phase'] in ('queued', 'handoff')]
-    pilot=queue.get('pilot_provider') if queue.get('policy')==PILOT_POLICY else None
-    return {'schema': SCHEMA, 'workspace': str(root), 'limits': LIMITS,
-            **({'provider_pilot':{'provider':pilot,'limits':PILOT_LIMITS,
+    pilot=queue.get('pilot_provider') if queue.get('policy') in PROVIDER_LIMITS else None
+    return {'schema': queue['schema'], 'host': host, 'workspace': str(root), 'limits': LIMITS,
+            **({'provider_pilot':{'provider':pilot,'limits':PROVIDER_LIMITS[queue['policy']],
                                  'occupied':_pilot_counts(active,pilot)}} if pilot else {}),
             'policy':queue.get('admission_policy',queue.get('policy')),'protocol_policy':queue.get('policy'),
             'policy_ready':policy_ready(queue),
             'legacy_runtime_tickets':[e for e in queue['entries'] if not current_ticket(e)],
-            'waiting_review':list(suspended.values()), 'observed_at_unix': observed['at'],
+            'waiting_review':[e for e in suspended.values() if not e.get('model_retry')],
+            'waiting_retry':[e for e in suspended.values() if e.get('model_retry')],
+            'observed_at_unix': observed['at'],
             'counts': {'occupied': counts, 'queued': {k: sum(e['kind'] == k for e in waiting) for k in ('author', 'review')}},
             'occupancy_counts': {category:{kind:sum(r['kind']==kind and r['occupancy']==category for r in active) for kind in ('author','review')}
                 for category in ('confirmed_execution','launch_reservation','unknown_reservation')},
             'active': active, 'waiting': waiting, 'stale_wait_or_reservations': stale,
-            'scope': ('The selected provider uses four total seats, at most three per role, and the earliest eligible original ticket. '
+            'scope': ('The selected provider uses its reported limits and the earliest eligible original ticket. '
                       if pilot else 'Six author and six reviewer seats, twelve total, with FIFO within each role. ') +
                      'Verified review waits yield the model seat. The same invocation takes a new ticket to reenter. '
-                     'Execution ownership and original stops remain protected. Devin is outside these pools.',
-            'queue_source': str(_paths(root)[0]), 'observation_source': 'original execution metadata and OS process ownership'}
+                     'Seats belong to this host. Execution ownership and original stops remain protected.',
+            'queue_source': str(_paths(root, host)[0]), 'observation_source': 'original execution metadata and OS process ownership'}
 
 
 def waiting_run(root, run):
     """Project an existing ticket; observing it never admits or restarts work."""
-    if run.get('target_host') != 'deepseek_harness':
+    host = run.get('target_host')
+    if host not in POOL_NAMES:
         return None  # Other hosts do not depend on this service's queue or quota.
     run_id = run['id']
     if not any(e['run_id'] == run_id and e['phase'] in ('queued','handoff')
-               for e in _queue(Path(root).resolve())['entries']):
+               for e in _queue(Path(root).resolve(),host)['entries']):
         return None
-    view = snapshot(root)
+    view = snapshot(root, host)
     for entry in view['waiting']:
         if entry['run_id'] == run_id:
             return {**entry, 'limits': view['limits'], 'counts': view['counts'],
@@ -511,9 +667,24 @@ def waiting_run(root, run):
     return None
 
 
+def _release_model(root, run_id, actor, execution_path, metadata):
+    """Publish a proven closed model after acquiring the original queue lock."""
+    queue = _queue(root)
+    entry = next((e for e in queue['entries'] if e['run_id'] == run_id), None)
+    metadata['model_closed'] = True
+    execution.atomic_json(execution_path, metadata)
+    if entry:
+        queue['entries'].remove(entry)
+        execution.atomic_json(_paths(root)[0], queue)
+        record_capacity(root, actor, {'id':run_id, 'phase':'released', 'kind':entry['kind'],
+            'sequence':entry['sequence'], 'queue_source':str(_paths(root)[0])})
+    _paths(root)[2].unlink(missing_ok=True)  # Only the derived OS snapshot.
+
+
 class Capacity:
-    def __init__(self, root, lease, kind, actor, *, handoff=None, provider=None):
-        if kind not in ('author','review'):raise ValueError('DSH role must be author or review')
+    def __init__(self, root, lease, kind, actor, *, handoff=None, provider=None, host=DSH):
+        self.host = host
+        if kind not in ('author','review'):raise ValueError('Capacity role must be author or review')
         self.root,self.lease,self.kind,self.actor=Path(root).resolve(),lease,kind,actor
         self.run_id=lease.value['run_id'];self.handoff=handoff
         self.provider=provider
@@ -521,62 +692,64 @@ class Capacity:
 
     @property
     def environment(self):
+        if self.host == DEVIN:
+            return {'HTAM_DEVIN_ROOT': str(self.root), 'HTAM_DEVIN_RUN': self.run_id}
         return {'HTAM_DSH_CAPACITY_ROOT':str(self.root),'HTAM_DSH_CAPACITY_RUN_ID':self.run_id}
 
     def _event(self,entry,phase):
-        tasks.mutate(self.root,'run-capacity',self.actor,{'id':entry['run_id'],'phase':phase,
-            'kind':entry['kind'],'sequence':entry['sequence'],'queue_source':str(_paths(self.root)[0])})
+        record_capacity(self.root,self.actor,{'id':entry['run_id'],'phase':phase,
+            'kind':entry['kind'],'sequence':entry['sequence'],'queue_source':str(_paths(self.root, self.host)[0])},host=self.host)
 
     def _remove(self,phase,*,launched=False):
         if not self.enqueued:return
-        with _lock(self.root):
-            queue=_queue(self.root)
+        with _lock(self.root, host=self.host):
+            queue=_queue(self.root, self.host)
             entry=next((e for e in queue['entries'] if e['run_id']==self.run_id),None)
             if entry is None:return
             if launched:
-                try:observed=_observe(self.root,cached=False,save=True)
+                try:observed=_observe(self.root,cached=False,save=True, host=self.host)
                 except (OSError,ValueError,subprocess.SubprocessError):return
                 active,_,_=_effective(queue,observed)
                 if any(r['run_id']==self.run_id and r['reason']!='admitted_launch_reservation' for r in active):return
             queue['entries'].remove(entry)
-            execution.atomic_json(_paths(self.root)[0],queue);self._event(entry,phase)
+            execution.atomic_json(_paths(self.root, self.host)[0],queue);self._event(entry,phase)
 
     def _await(self,guard):
         while True:
             guard()
-            with _lock(self.root,guard):
-                queue=_queue(self.root)
+            with _lock(self.root, guard, host=self.host):
+                queue=_queue(self.root, self.host)
                 for stopped in list(queue['entries']):
                     if stopped['phase']=='handoff':
                         run=tasks.read_run(self.root,stopped['run_id'])
                         if run['stop_requested'] and run['outcome']=='intent' and run['native_identity'] is None:
                             queue['entries'].remove(stopped);self._event(stopped,'cancelled_before_start')
-                            execution.atomic_json(_paths(self.root)[0],queue)
+                            execution.atomic_json(_paths(self.root, self.host)[0],queue)
                 entry=next((e for e in queue['entries'] if e['run_id']==self.run_id),None)
                 if entry is None:raise ValueError('Original FIFO ticket is missing; preserve the original run')
-                try:observed=_observe(self.root,save=True)
+                try:observed=_observe(self.root,save=True, host=self.host)
                 except (OSError,ValueError,subprocess.SubprocessError):observed=None
                 if observed is not None:
                     changed=_refresh_identities(queue,observed)
                     suspended = _controlled_waits(queue, observed)
-                    exited_waits = _exited_review_waits(self.root, queue, observed)
+                    exited_waits = _exited_review_waits(self.root, queue, observed, self.host)
                     active,counts,stale=_effective(queue, observed, suspended=suspended, exited_waits=exited_waits)
-                    _retire_exited_waits(self.root, queue, self.actor, exited_waits)
+                    _retire_exited_waits(self.root, queue, self.actor, exited_waits, host=self.host)
                     for old in stale:
                         if old['run_id'] not in exited_waits:
                             queue['entries'].remove(old);self._event(old,'abandoned' if old['phase']=='queued' else 'released')
                     changed=_finish_protocol_handoff(queue) or changed
                     if _waiting_reason(entry,counts,queue,suspended,active) is None:
                         guard();entry.update(phase='admitted',admitted_at=time.time())
-                        execution.atomic_json(_paths(self.root)[0],queue);self._event(entry,'admitted');return
-                    if stale or changed:execution.atomic_json(_paths(self.root)[0],queue)
+                        execution.atomic_json(_paths(self.root, self.host)[0],queue);self._event(entry,'admitted');return
+                    if stale or changed:execution.atomic_json(_paths(self.root, self.host)[0],queue)
             time.sleep(POLL_SECONDS)
 
     @contextlib.contextmanager
     def admit(self,guard):
         try:
-            with _lock(self.root,guard):
-                queue=_queue(self.root)
+            with _lock(self.root, guard, host=self.host):
+                queue=_queue(self.root, self.host)
                 entry=next((e for e in queue['entries'] if e['run_id']==self.run_id),None)
                 if entry is not None:
                     if (not self.handoff or entry.get('claimed_handoff')!=self.handoff or entry['kind']!=self.kind
@@ -584,8 +757,8 @@ class Capacity:
                         raise ValueError('Original run already owns a capacity ticket; observe without replay')
                     entry.pop('claimed_handoff')
                 else:
-                    admission_policy=PILOT_POLICY if queue.get('policy')==PILOT_POLICY else POLICY
-                    if admission_policy==PILOT_POLICY and not self.provider:
+                    admission_policy=queue['policy'] if queue.get('policy') in PROVIDER_LIMITS else POLICY
+                    if admission_policy in PROVIDER_LIMITS and not self.provider:
                         raise ValueError('Identify the original provider before entering the pilot queue.')
                     entry={'run_id':self.run_id,'request_id':self.lease.value['request_id'],'kind':self.kind,
                         'sequence':queue['next_sequence'],'phase':'queued','queued_at':time.time(),
@@ -593,7 +766,7 @@ class Capacity:
                         'native_session':(self.lease.native or {}).get('id'),'policy':queue.get('policy'),
                         'admission_policy':admission_policy,'provider':self.provider}
                     queue['next_sequence']+=1;queue['entries'].append(entry)
-                execution.atomic_json(_paths(self.root)[0],queue);self.enqueued=True;self._event(entry,'queued')
+                execution.atomic_json(_paths(self.root, self.host)[0],queue);self.enqueued=True;self._event(entry,'queued')
             self._await(guard)
             yield self
         except StopRequested as exc:
@@ -601,36 +774,70 @@ class Capacity:
             raise
         finally:self._remove('released' if self.launched else 'cancelled_before_start',launched=self.launched)
 
-    @contextlib.contextmanager
-    def review_wait(self,guard,review_id):
-        """Yield only the model seat; original execution/writer ownership stays."""
-        guard();token=__import__('uuid').uuid4().hex
-        with _lock(self.root,guard):
-            queue=_queue(self.root)
-            entry=next(e for e in queue['entries'] if e['run_id']==self.run_id)
-            if entry['phase']!='admitted' or not current_ticket(entry):
+    def _yield_model(self, guard, *, phase, source, **detail):
+        guard()
+        token = uuid4().hex
+        with _lock(self.root, guard, host=self.host):
+            queue = _queue(self.root, self.host)
+            entry = next((e for e in queue['entries'] if e['run_id'] == self.run_id), None)
+            if not entry or entry['phase'] != 'admitted' or not current_ticket(entry):
                 raise ValueError('Only the original admitted current-policy invocation can yield its seat')
             with self.lease.metadata_lock:
-                self.lease.value['capacity_wait']={'token':token,'review_id':review_id,'source':'controlled_review_result'}
-                execution.atomic_json(self.lease.path,self.lease.value)
-            entry.update(phase='waiting_review',wait_token=token,review_id=review_id,
-                native_session=(self.lease.value.get('native_identity') or {}).get('id'))
-            execution.atomic_json(_paths(self.root)[0],queue);self._event(entry,'waiting_review')
-        try:yield
+                self.lease.value['capacity_wait'] = {'token': token, 'source': source, **detail}
+                execution.atomic_json(self.lease.path, self.lease.value)
+            entry.update(phase=phase, wait_token=token, model_retry=phase == 'waiting_retry', **detail)
+            entry['native_session'] = (self.lease.value.get('native_identity') or {}).get('id') or entry['native_session']
+            execution.atomic_json(_paths(self.root, self.host)[0], queue)
+            self._event(entry, phase)
+
+    def _reacquire_model(self, guard):
+        guard()
+        with _lock(self.root, guard, host=self.host):
+            queue = _queue(self.root, self.host)
+            entry = next((e for e in queue['entries'] if e['run_id'] == self.run_id), None)
+            if not entry or not _pending_wait(entry) or not _wait_metadata(queue, entry):
+                raise ValueError('Original model wait ticket is missing or changed')
+            entry.update(phase='queued', sequence=queue['next_sequence'], queued_at=time.time())
+            queue['next_sequence'] += 1
+            execution.atomic_json(_paths(self.root, self.host)[0], queue)
+            self._event(entry, 'queued')
+        self._await(guard)
+        with self.lease.metadata_lock:
+            self.lease.value.pop('capacity_wait', None)
+            execution.atomic_json(self.lease.path, self.lease.value)
+
+    def wait_for_retry(self, guard):
+        self._yield_model(guard, phase='waiting_retry', source='controlled_model_retry')
+
+    def admit_model_request(self, guard):
+        if self.lease.value.get('model_closed'):
+            raise ValueError('Original invocation has closed model access')
+        if (self.lease.value.get('capacity_wait') or {}).get('source') == 'controlled_model_retry':
+            self._reacquire_model(guard)
+        with _lock(self.root, guard):
+            entry = next((e for e in _queue(self.root)['entries'] if e['run_id'] == self.run_id), None)
+            if not entry or entry['phase'] != 'admitted' or entry['manager'] != self.lease.value['manager']:
+                raise ValueError('Original DSH model request has no admitted capacity ticket')
+            guard()
+
+    def close_model(self):
+        """The adapter has closed the current stream and disallowed more calls."""
+        if self.host != DSH or not self.launched or self.lease.value.get('model_closed'):
+            return
+        with _lock(self.root):
+            with self.lease.metadata_lock:
+                _release_model(self.root, self.run_id, self.actor, self.lease.path, self.lease.value)
+
+    @contextlib.contextmanager
+    def review_wait(self, guard, review_id):
+        """Yield only the model seat; original execution/writer ownership stays."""
+        self._yield_model(guard, phase='waiting_review', source='controlled_review_result', review_id=review_id)
+        try:
+            yield
         finally:
-            # The pending tool response cannot reach the model until this same
-            # invocation fairly reacquires a seat. Stop never clears/restarts it.
             try:
-                guard()
-                with _lock(self.root,guard):
-                    queue=_queue(self.root);entry=next(e for e in queue['entries'] if e['run_id']==self.run_id)
-                    entry.update(phase='queued',sequence=queue['next_sequence'],queued_at=time.time())
-                    queue['next_sequence']+=1
-                    execution.atomic_json(_paths(self.root)[0],queue);self._event(entry,'queued')
-                self._await(guard)
-                with self.lease.metadata_lock:
-                    self.lease.value.pop('capacity_wait',None);execution.atomic_json(self.lease.path,self.lease.value)
+                self._reacquire_model(guard)
             except StopRequested:raise
             except (OSError,ValueError,KeyError,StopIteration,subprocess.SubprocessError) as exc:
                 from agent_base import CapabilityUnavailable
-                raise CapabilityUnavailable('Original DSH model seat was not reacquired; advancement withheld: '+type(exc).__name__) from exc
+                raise CapabilityUnavailable('Original model seat was not reacquired; advancement withheld: '+type(exc).__name__) from exc

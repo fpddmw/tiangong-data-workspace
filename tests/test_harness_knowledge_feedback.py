@@ -166,7 +166,7 @@ class KnowledgeFeedbackTests(unittest.TestCase):
         self.assertEqual(sum(len(page['created_requests']) for page in repeated['pages']),0)
 
     def test_package_description_and_targets_evolve_without_new_package_or_plan(self):
-        import harness_business as business
+        from task_ledger import business
         first=self.write('original/package-a.json',{'package_id':'package','note':'First selection',
             'subject_refs':['process:f83f7f6c-cd88-5b4a-8263-a3d177b2f663@00.00.001']})
         original=business.bind_package(self.root,self.actor,'T',first['path'])

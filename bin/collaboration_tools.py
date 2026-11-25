@@ -16,7 +16,7 @@ from agent_base import StopRequested, child_environment
 # Shared declarations for the native delivery channels.
 CONTROLLED_TOOLS = {
     'tiangong_cli': {
-        'description': 'Execute the current public TianGong CLI through the original trusted role launcher. Supply role, surface and CLI arguments only; no executable, shell, environment or cwd. Use absolute paths and the CLI --output option for files. Receiving the tool is separate from CLI success: inspect exit_code, complete output files and original operation receipts. Existing account/data authorization and unknown attempts remain unchanged; never retry an uncertain write.',
+        'description': 'Execute the current public TianGong CLI through the original trusted role launcher. For structure or reference diagnosis, use dataset validate or preview the original create/save request with --dry-run. A live create persists a real dataset and belongs to an authorized deliverable. Supply role, surface and CLI arguments only; no executable, shell, environment or cwd. Use absolute paths and the CLI --output option for files. Receiving the tool is separate from CLI success: inspect exit_code, complete output files and original operation receipts. Existing account/data authorization and unknown attempts remain unchanged; never retry an uncertain write.',
         'inputSchema': {'type': 'object', 'properties': {
             'role': {'type': 'string', 'enum': ['editor', 'research']},
             'surface': {'type': 'string', 'enum': ['cli', 'ai']},
@@ -66,10 +66,11 @@ REVIEW_METHODS = {'request_review': 'request_review', 'review_result': 'result',
 
 
 def identity_note(receipt):
-    state = receipt.get('identity_state', '身份已核' if receipt.get('status') == 'passed' else '需刷新')
+    state = receipt.get('identity_state', '身份已核' if receipt.get('status') == 'passed' else '身份未核实')
+    action = ('由原账号持有人完成正式 CLI 登录。' if state == '需登录' else
+              '需要重新核对时由可信宿主用 refresh_editor_identity 验证原账号。')
     return ('\n编辑身份：' + state + '；检查时点：' + str(receipt.get('captured_at_utc', '未取得')) +
-            '。身份有效期不代表任务授权期限。在线身份或沙箱刷新失败时用 refresh_editor_identity，'
-            '由可信宿主调用原正式CLI；保留原数据attempt，继续本地工作。')
+            '。身份有效期不代表任务授权期限。' + action + '核验不可用期间保留原数据 attempt，继续本地工作。')
 
 
 def _session_stat(root):
@@ -139,7 +140,7 @@ def editor_preflight(root, config, capabilities):
                                 if isinstance(error, dict) and isinstance(error.get('details'), dict)
                                 and isinstance(error['details'].get(key), (str, int))},
                     'safe_errors': errors, 'session_path_before': before, 'session_path_after': _session_stat(root)}
-            result['identity_state'] = '服务不可达' if transient else '需刷新'
+            result['identity_state'] = '服务不可达' if transient else '身份未核实'
             if not transient or any(v in text for v in ('invalid_grant', 'session_failed', 'login-required', 'missing')):
                 try:
                     status = subprocess.run([sys.executable, str(launch), '--role', 'editor', 'cli', 'auth', 'status', '--json'],
@@ -150,12 +151,17 @@ def editor_preflight(root, config, capabilities):
                     result['public_status'] = {'state': 'unreadable'}
                 except (OSError,subprocess.TimeoutExpired) as exc:
                     result['public_status'] = {'state': 'unavailable','code':type(exc).__name__}
-                status_text = json.dumps(result['public_status']).casefold()
-                if any(s in status_text + text for s in ('login-required', 'invalid_grant', 'missing')):
+                local = result['public_status']
+                local = local.get('receipt',local) if isinstance(local,dict) else {}
+                local = local if isinstance(local,dict) else {}
+                if (local.get('status') == 'login-required' or local.get('sessionState') == 'missing'
+                        or 'invalid_grant' in text or (result['code'] == 'AUTH_IDENTITY_SESSION_FAILED' and 'missing original session' in text)):
                     result.update(identity_state='需登录', cause='unknown; absence/mtime alone does not establish removal cause',
                         recovery='bin/launch.py --role editor cli auth login (original account owner); retain original attempts and continue local work')
                 elif 'eperm' in text or 'eacces' in text:
                     result.update(identity_state='需刷新', cause='sandbox session access; trusted refresh_editor_identity bridge required')
+                elif local.get('sessionState') == 'refresh-required':
+                    result.update(identity_state='需刷新')
             return result
         receipt = json.loads(checked.stdout).get('data', {}).get('receipt', {})
         if (isinstance(receipt, dict) and checked.returncode == 0 and receipt.get('schema') == 'tiangong-lca.auth-identity-receipt.v1'

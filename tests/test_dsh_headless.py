@@ -10,9 +10,9 @@ from unittest.mock import Mock, patch
 
 import test_agent_runtime as fixtures
 import dsh_headless
-import harness_entry
+import harness_snapshot
 import harness_hook
-import harness_sessions as sessions
+from task_ledger import sessions
 import harness_tasks as tasks
 import run_worker
 
@@ -166,7 +166,8 @@ raise SystemExit(value['exit'])
         host.update(launch_mode='desktop-cli', module_entry='/installed/app.asar/dsh/cli.js',
                     tool_path=[str(self.home)])
         cli = Path(host['binary'])
-        cli.write_text('#!' + sys.executable + '\n' + cli.read_text())
+        from python_executable_fixture import python_executable
+        python_executable(cli, cli.read_text())
         self.config_path.write_text(json.dumps(config))
         self._stream(final={'contribution': 'Desktop launcher returned.', 'complete': True})
         result = self._dispatch()
@@ -258,6 +259,9 @@ raise SystemExit(value['exit'])
         self.assertEqual(Path(review['cwd']), self.root)
         self.assertEqual(review['policy']['allow'], ['read'])
         self.assertIn(str(self.root / 'roles/reviewer.md'), review['input'])
+        for native in (author, review):
+            self.assertIn('原生 final', native['input'])
+            self.assertIn('宿主随后自动登记', native['input'])
         self.assertNotIn('check_delivery', review['input'])
         self.assertNotIn('"required": ["severity", "location", "reason", "required_change"]', review['input'])
         self.assertNotIn('never prose descriptions', review['input'])
@@ -271,6 +275,9 @@ raise SystemExit(value['exit'])
         retained = runtime.read_receipt(self.root, original['latest_receipt'])['result']
         self.assertEqual(retained['result'], first['events'][-1]['text'])
         self.assertEqual(retained['collected_review_return_ids'], checked['return_ids'])
+        self.assertEqual(run_worker.programmatic(self.root, 'request', read_result=True)['run_id'], original['id'])
+        review = run_worker.programmatic(self.root, 'request', read_result=True, exact_run_id=checked['id'])
+        self.assertEqual(review['run_id'], checked['id'])
 
     def _stream(self, *, turn=4, final=None, exit_code=0, before_open=None, not_started=False):
         if before_open is None:
@@ -338,7 +345,7 @@ raise SystemExit(value['exit'])
         self.assertEqual(json.loads(observations[0].read_bytes())['failure']['exit_code'], 7)
         with patch.dict(os.environ, {'DSH_SHELL': '1', 'DSH_SESSION_ID': NATIVE_ID}):
             del os.environ['CODEX_THREAD_ID']
-            view = harness_entry.current(self.root, request_id='request')['work']
+            view = harness_snapshot.read(self.root, request_id='request')['work']
             self.assertEqual([r['id'] for r in view['runs']], [initial['id']])
             self.assertEqual(tasks.verified_actor(self.root)['id'], NATIVE_ID)
         note = self.home / 'continue.md'
@@ -550,11 +557,55 @@ raise SystemExit(value['exit'])
         self._stream(final={'contribution': 'A second native launch would replace the useful result.',
                             'complete': True})
         displayed = self._dispatch(explicit=False)
-        self.assertEqual(displayed['state'], 'returned')
-        self.assertEqual(displayed['management_return']['return_id'], direct['id'])
-        self.assertEqual(displayed['original_run']['outcome'], 'failed')
+        self.assertEqual(displayed['outcome'], 'failed')
+        self.assertEqual(displayed['run_id'], original['id'])
+        self.assertEqual(displayed['request_delivery']['return_id'], direct['id'])
+        self.assertFalse((displayed.get('management_return') or {}).get('return_id'))
         self.assertEqual(tasks.read_run(self.root, original['id']), original)
         self.assertEqual(len(self.argv_log.read_text().splitlines()), 1)
+
+    def test_request_delivery_without_a_native_attempt_stays_readable(self):
+        report = self.home / 'previous-result.md'
+        report.write_text('Original direct result with separately verified evidence.')
+        direct = run_worker.return_result(self.root, self.actor, str(report), request_id='request')['id']
+        for value in (self._dispatch(), run_worker.programmatic(self.root, 'request', read_result=True)):
+            self.assertEqual(value['state'], 'returned')
+            self.assertEqual(value['management_return']['return_id'], direct)
+        self.assertFalse(self.argv_log.exists())
+
+    def test_request_delivery_stays_distinct_through_two_failed_attempts_and_success(self):
+        def failed_stream(turn):
+            events = self._stream(turn=turn, final='Partial text only.', exit_code=1)
+            reason = {'kind': 'error', 'error': {'code': 'TIMEOUT', 'message': 'Response timeout'}}
+            events['events'][-1]['reason'] = reason
+            events['events'][-2]['reason'] = reason
+            self.state.write_text(json.dumps(events))
+
+        failed_stream(4)
+        first = self._dispatch()
+        report = self.home / 'previous-result.md'
+        report.write_text('Original direct result with separately verified evidence.')
+        direct = run_worker.return_result(self.root, self.actor, str(report), request_id='request')['id']
+        instruction = self.home / 'continue.md'
+        instruction.write_text('Continue the remaining verified work in the same Session.')
+        failed_stream(5)
+        second = self._dispatch(instructions=instruction, run_id=first['run_id'])
+        for read in (second, self._dispatch(), run_worker.programmatic(self.root, 'request', read_result=True,
+                                                                      exact_run_id=second['run_id'])):
+            self.assertEqual((read['run_id'], read['outcome']), (second['run_id'], 'failed'))
+            self.assertEqual(read['request_delivery']['return_id'], direct)
+            self.assertFalse((read.get('management_return') or {}).get('return_id'))
+        self.assertEqual(len(self.argv_log.read_text().splitlines()), 2)
+
+        self._stream(turn=6, final='Complete current result.')
+        successful = self._dispatch(instructions=instruction, run_id=second['run_id'])
+        self.assertEqual(successful['outcome'], 'succeeded')
+        self.assertEqual(successful['request_delivery']['return_id'], direct)
+        self.assertNotEqual(successful['management_return']['return_id'], direct)
+        duplicate = self._dispatch(instructions=instruction, run_id=first['run_id'])
+        self.assertEqual((duplicate['run_id'], duplicate['outcome']), (second['run_id'], 'failed'))
+        self.assertEqual(self._dispatch()['run_id'], successful['run_id'])
+        self.assertEqual(len(self.argv_log.read_text().splitlines()), 3)
 
 
     def test_read_profile_uses_native_tools_and_scoped_cli_guidance(self):
@@ -602,10 +653,32 @@ raise SystemExit(value['exit'])
             result = adapter.readresult(native)
         self.assertEqual(result['native_status'], 'failed')
         self.assertEqual(result['native_diagnostic'], 'TIMEOUT')
+        self.assertEqual(result['transport_diagnostic']['phase'], 'unobserved')
         self.assertIsNone(result['result'])
         for change in ({'latest_turn': 5}, {'terminal': None}, {'source': 'synthetic_closer'}):
             with self.subTest(change=change), patch.object(adapter, '_query', return_value={**observed, **change}):
                 self.assertEqual(adapter.readresult(native)['native_status'], 'unknown')
+
+    def test_transport_diagnostic_uses_only_the_last_request_in_the_native_turn(self):
+        error = {'code': 'TIMEOUT'}
+        same = {'terminal': 'error', 'error_code': 'TIMEOUT', 'turn': 4}
+        other = {**same, 'turn': 5, 'first_content_at_ms': 3}
+        for row, phase in (({'http': [{'failed_at_ms': 3}]}, 'before_response_headers'),
+                           ({'http': [{'headers_at_ms': 2}]}, 'after_headers_before_model_content'),
+                           ({'first_content_at_ms': 3}, 'after_model_content'),
+                           ({'terminal': 'completed'}, 'unobserved')):
+            with self.subTest(phase=phase):
+                diagnostic = dsh_headless.transport_diagnostic(error, [{**same, **row}, other], '4')
+                self.assertEqual(diagnostic['phase'], phase)
+        sse = {'code': 'LLM_API_ERROR', 'message': 'Error reading response: malformed server-sent event JSON.'}
+        for boundary, phase in (('blank_line', 'invalid_complete_event'), ('eof', 'incomplete_event_at_eof')):
+            failure = {'frame': {'boundary': boundary, 'byte_length': 20, 'raw_sha256': 'e' * 64},
+                       'request_ids': {'x-request-id': 'synthetic-response'}, 'status': 200}
+            attempt = {**same, 'error_code': sse['code'], 'sse_failures': [failure]}
+            diagnostic = dsh_headless.transport_diagnostic(sse, [attempt, other], '4')
+            self.assertEqual(diagnostic['phase'], phase)
+            self.assertEqual(diagnostic['response'], failure)
+            self.assertEqual(dsh_headless.transport_diagnostic(sse, [attempt, {**same}], '4')['phase'], 'unobserved')
 
     def test_live_goal_observation_is_bound_to_exact_turn_and_does_not_claim_delivery(self):
         value = self._stream(final='A stage report; the agreed scientific work remains.')

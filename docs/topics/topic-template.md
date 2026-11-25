@@ -1,6 +1,6 @@
 # 主题导航示例
 
-主题页帮助查找已有目标与原材料。按 [NAVIGATION](../../NAVIGATION.md#topic-delivery-views) 选择真正有用的信息即可；原任务已经清楚时直接链接原入口。
+主题页帮助查找已有目标与原材料。按 [NAVIGATION](../workspace/materials.md#topic-delivery-views) 选择真正有用的信息即可；原任务已经清楚时直接链接原入口。
 
 ```markdown
 # 主题名

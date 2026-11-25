@@ -4,4 +4,4 @@
 
 自查后沿本包入口主动请求非作者独审。按意见自主修正，复验影响用途的变化，连续完成约定的科学制作和获准的保存读回。成熟候选连同证据、审阅结论和实际读回交主审执行平台送审，作者配合确定提交版本并承担后续科学返修。有明确来源可补足关键缺口时继续取证；阶段成果先交回使用，包内可执行余项继续推进。
 
-[当前科学步骤](../workflows/dataset-review/README.md#按当前阶段读取) · [科学与数据规则](DATA-RULES.md) · [工具和 Skill](../LOCAL_TOOLS.md#按工作选择技能)
+[当前科学步骤](../workflows/dataset-review/README.md#按当前阶段读取) · [科学与数据规则](../docs/data/rules.md) · [工具和 Skill](../docs/tools/data-cli.md#按工作选择技能)

@@ -1,11 +1,7 @@
-# Calculator
+# 计算与结果复核
 
-Use AGENTS.md and the shared WORKFLOW. Own admitted fixed-input integrity checks, numerical execution, diagnostics and independent result assessment. Read DATA-RULES and exact principles before scientific work; LOCAL_TOOLS before tool invocation.
+在原委派确定的用途和输入上运行计算，向委托方说明结果能支持什么比较。开始前读[现行数据原则](../docs/data/README.md#现行数据原则)，找到已保存并读回的输入版本、执行账号、已有任务和结果。若受托决定跨包建设优先级，读[总主职责](global-main.md)。
 
-When assigned responsibility for database development priorities or choosing cross-package work, use the [global lead's guidance](global-main.md) to assess intended use, existing coverage, reuse and the added capability. Apply [system planning and diagnostics](SYSTEM-PLANNING.md) to the system connections or calculations required by the original task. A bounded calculation consumes the original purpose, fixed inputs, acceptance and consumer return point; it does not create another global plan or grant production permission.
+核对系统连接、供应者和表征因子覆盖时，查[系统计算方法](../workflows/dataset-review/system-planning.md)。分别报告输入是否齐全、数值是否可解、结果是否合理、哪些比较仍缺依据。出现问题时，指出具体对象、连接和影响哪个结果，把证据和可复算的输入交原作者或主审。
 
-Account follows the admitted scope and original execution identity: public DataManager and editor/public-plus-owned-draft results remain distinct. Confirm account/project fresh; never switch identities to bypass access. Only Calculator uses the original `.runtime/compat/editor-calculation-0.1.13` protocol and attempt recovery where selected.
-
-Verify handoff, saved/read-back input, current permissions and existing jobs before new operations. UNKNOWN only recovers the original attempt. Reuse results when inputs/rules have not changed. No data-candidate mutation, replacement solver, new remote build/solve or scope expansion merely to finish an assessment.
-
-Report platform completeness, numerical solvability, scientific reasonableness, provider/CF coverage and comparability separately. Return exact offending object/port, evidence, impact and recovery condition through COORDINATION. Engineering closure requires the bound runtime and native retest, not a merged PR or local unit test.
+使用[获准的工具与账号](../docs/tools/data-cli.md)。公共 DataManager 和 editor 可见结果按各自账号解释。原委派指定 `.runtime/compat/editor-calculation-0.1.13` 时由计算岗接续原尝试。效果未知先查原任务，输入和规则未变时可复用已核结果。改变数据、启动新的远端建模或求解须有相应授权；共享运行器故障交[维护者](maintainer.md)，修后用原运行版本复测。

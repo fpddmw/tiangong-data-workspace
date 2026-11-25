@@ -23,8 +23,7 @@ class TiangongCliTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name).resolve()/'原目录 with spaces';self.root.mkdir()
-        for name in ('bin','.venv/bin','work','nested folder'): (self.root/name).mkdir(parents=True)
-        (self.root/'.venv/bin/python').symlink_to(sys.executable)
+        for name in ('bin','work','nested folder'): (self.root/name).mkdir(parents=True)
         self.native=self.root/'bin/native.py'
         self.native.write_text('''import json,os,subprocess,sys,time
 from pathlib import Path
@@ -85,6 +84,16 @@ if '--fail' in args:raise SystemExit(7)
         self.assertEqual(Path(native['input_ref']['path']).read_bytes(),source.read_bytes())
         self.assertEqual((self.root/'calls').read_text(),'once\n')
 
+    def test_managed_review_preflight_remains_available_and_send_uses_original_root_entry(self):
+        base={'role':'editor','surface':'cli'}
+        refused=self.call({**base,'argv':['review','submit','--json']})
+        self.assertFalse(refused['accepted'])
+        self.assertFalse((self.root/'calls').exists())
+        preview=self.call({**base,'argv':['review','submit','--dry-run','--json']})
+        self.assertTrue(preview['accepted'])
+        self.assertEqual(preview['diagnostic']['invocation_effect'], 'read_only')
+        self.assertEqual((self.root/'calls').read_text(),'once\n')
+
     def test_only_editor_result_group_can_create_its_local_recovery_file(self):
         fake_home = Path(self.temp.name).resolve() / 'account'
         state = fake_home / '.local/state/tiangong-lca'
@@ -98,7 +107,9 @@ output = journal/'operation.json'
 output.write_text('recovery')
 assert output.read_text() == 'recovery'
 """)
-        args = ['dataset','model','result-group']
+        request=self.root/'inspect.json'
+        request.write_text('{"action":"inspect","modelId":"a45f9880-e0b4-45a6-91f8-1b27640a0600","version":"00.00.001"}')
+        args = ['dataset','model','result-group','--input',str(request)]
         with patch.dict(os.environ, {'HOME': str(fake_home)}):
             for role, command in [('research',args),('editor',['dataset','model','get'])]:
                 diagnostic = self.call({'role':role,'surface':'cli','argv':command})['diagnostic']
@@ -107,6 +118,16 @@ assert output.read_text() == 'recovery'
             diagnostic = self.call({'role':'editor','surface':'cli','argv':args})['diagnostic']
             self.assertEqual(diagnostic['exit_code'],0,diagnostic['stderr'])
             self.assertEqual((journal/'operation.json').read_text(),'recovery')
+
+    def test_diagnostic_modes_and_real_create_expose_the_original_invocation_effect(self):
+        for argv, expected in ((['validate'], 'read_only'), (['create','--dry-run'], 'read_only'),
+                               (['create'], 'possible_write')):
+            args = {'role':'editor','surface':'cli','argv':['dataset','process',*argv]}
+            result = self.call(args)['diagnostic']
+            self.assertEqual(result['invocation_effect'], expected)
+            actual = json.loads(Path(result['record_ref']['path']).read_bytes())
+            self.assertEqual(actual['invocation_effect'], expected)
+            self.assertEqual(actual['argv'], args['argv'])
 
     def test_roles_and_overrides_are_rejected_before_process_creation(self):
         valid={'role':'editor','surface':'cli','argv':['--version']}

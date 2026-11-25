@@ -11,8 +11,8 @@ import subprocess
 import sys
 import tempfile
 
-from lca_gate_projection import SCHEMA as PROJECTION_SCHEMA, SUMMARY_FORMAT, exchange_changes, markdown, project
-from lca_gate_references import KINDS, reference_rows, select_references
+from dataset_checks.projection import SCHEMA as PROJECTION_SCHEMA, SUMMARY_FORMAT, exchange_changes, markdown, project
+from dataset_checks.references import KINDS, reference_rows, select_references
 from workspace_files import sha256_file
 
 ROOT = Path(__file__).resolve().parent.parent

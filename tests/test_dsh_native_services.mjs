@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {createRequire} from 'node:module'
 import {pathToFileURL,fileURLToPath} from 'node:url'
 import {execFileSync} from 'node:child_process'
-import {installIdentityRefresh,installReviewRequest,installReviewResult,installLocalCheck,installFindingReport,installTiangongCli} from '../bin/dsh_delivery.mjs'
+import {installIdentityRefresh,installReviewRequest,installReviewResult,installLocalCheck,installFindingReport,installTiangongCli} from '../bin/dsh/delivery.mjs'
 const require=createRequire(process.argv[2])
 const native=name=>import(pathToFileURL(require.resolve('@deepseek-ai/'+name)))
 let tool
@@ -11,7 +11,8 @@ await installIdentityRefresh({tools:{register:t=>tool=t}},process.argv[2],{async
 assert.equal(tool.name,'refresh_editor_identity')
 assert.equal(JSON.parse(await tool.execute({},{signal:new AbortController().signal})).diagnostic.status,'passed')
 
-const declarations=JSON.parse(execFileSync(fileURLToPath(new URL('../.venv/bin/python',import.meta.url)),
+const python = process.env.HTAM_TEST_PYTHON || 'python3'
+const declarations=JSON.parse(execFileSync(python,
   ['-c','import json;from collaboration_tools import CONTROLLED_TOOLS;print(json.dumps(CONTROLLED_TOOLS))'],
   {encoding:'utf8',env:{...process.env,PYTHONPATH:fileURLToPath(new URL('../bin',import.meta.url))}}))
 const cliArgs={role:'editor',surface:'cli',argv:['--version','; literal 参数']}
@@ -115,7 +116,7 @@ console.log('Installed author tools preserve native collaboration; four-image re
  const execute=promisify(execFile),repo=dirname(dirname(fileURLToPath(import.meta.url)))
  const root=await mkdtemp(join(tmpdir(),'htam-context-native-'))
  await writeFile(join(root,'ISOLATED-CONTEXT-FIXTURE'),'isolated native service qualification')
- const python=join(repo,'.venv/bin/python'),fixture=join(repo,'tests/context_native_fixture.py')
+ const fixture=join(repo,'tests/context_native_fixture.py')
  const env={...process.env,DSH_HOME:join(root,'dsh-home'),ELECTRON_RUN_AS_NODE:'1'}
  for(const key of ['CODEX_THREAD_ID','CODEX_TURN_ID','DSH_SESSION_ID','DSH_SHELL','CLAUDE_SESSION_ID'])delete env[key]
  await execute(python,[fixture,'init',root],{env,timeout:10000})
@@ -126,8 +127,8 @@ console.log('Installed author tools preserve native collaboration; four-image re
    config:{moduleEntry:process.argv[2],workspaceRoot:root,python,fixture,snapshotEntry:join(repo,'bin/harness_context_hook.py')}}]}
  ]))
  try {
-  const result=await execute('/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh',
-   ['--profile','headless','--patch',patch,'--json','--permission-mode','read-only','--approval-policy','never','Isolated native context qualification'],
+  const result=await execute(process.execPath,
+   [process.argv[2],'--profile','headless','--patch',patch,'--json','--permission-mode','read-only','--approval-policy','never','Isolated native context qualification'],
    {env,cwd:root,timeout:45000,maxBuffer:4*1024*1024})
   const output=result.stdout.split('\n').filter(Boolean).map(line=>{try{return JSON.parse(line)}catch{return null}})
   const proof=output.find(r=>r?.type==='qualification')

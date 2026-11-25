@@ -4,26 +4,31 @@ import {promisify} from 'node:util'
 import {join} from 'node:path'
 import {pathToFileURL} from 'node:url'
 import {randomUUID} from 'node:crypto'
+import {existsSync} from 'node:fs'
 const execute=promisify(execFile)
-export async function packageCoordinates(root,{maxBuffer=16*1024*1024,includeCapacity=false}={}) {
+export async function packageCoordinates(root,{maxBuffer=16*1024*1024,includeCapacity=false,python}={}) {
+  const projectPython=join(root,'.venv/bin/python')
+  const interpreter=python ?? (existsSync(projectPython) ? projectPython : 'python3')
   const argv=[join(root,'bin/harness.py'),'--root',root,'work-packages']
   let stdout
-  try {({stdout}=await execute(join(root,'.venv/bin/python'),argv,{maxBuffer,timeout:30000}))}
+  try {({stdout}=await execute(interpreter,argv,{maxBuffer,timeout:30000}))}
   catch(error) {
     if(error.code==='ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
       const output=join(root,'work','package-view-'+randomUUID()+'.json')
+      const exportArgs=[...argv,'--output',output]
+      const detailCommand=[interpreter,...exportArgs].map(arg => "'" + arg.replaceAll("'", "'\\''") + "'").join(' ')
       let full
       try {
-        const saved=await execute(join(root,'.venv/bin/python'),[...argv,'--output',output],{maxBuffer:256*1024,timeout:30000})
+        const saved=await execute(interpreter,exportArgs,{maxBuffer:256*1024,timeout:30000})
         full=JSON.parse(saved.stdout)
         if(typeof full.output!=='string' || !/^[a-f0-9]{64}$/.test(full.sha256??''))throw new Error('Invalid complete export acknowledgment')
       } catch(failure) {
         throw Object.assign(new Error('读取未完成：complete package export could not be verified. Use work-packages --output FILE.'),
           {code:'READ_INCOMPLETE',causeCode:failure.code??'INVALID_EXPORT_ACK',intendedOutput:output,
-           detailCommand:'python3 bin/harness.py work-packages --output '+output})
+           detailCommand})
       }
       throw Object.assign(new Error('读取未完成：package output exceeded the process buffer. Complete query: '+full.output),
-        {code:'READ_INCOMPLETE',output:full,detailCommand:'python3 bin/harness.py work-packages --output '+output})
+        {code:'READ_INCOMPLETE',output:full,detailCommand})
     }
     throw Object.assign(new Error('读取未完成：original package query unavailable; use work-packages --output FILE.'),{code:'READ_INCOMPLETE',causeCode:error.code})
   }
@@ -35,7 +40,7 @@ export async function packageCoordinates(root,{maxBuffer=16*1024*1024,includeCap
   if(includeCapacity===true) {
     result.capacity=null
     try {
-      const {stdout: capacityOutput}=await execute(join(root,'.venv/bin/python'),
+      const {stdout: capacityOutput}=await execute(interpreter,
         [join(root,'bin/harness.py'),'--root',root,'work-capacity'],{maxBuffer,timeout:30000})
       const {observed_at_unix,counts,occupancy_counts}=JSON.parse(capacityOutput)
       if(Number.isFinite(observed_at_unix) && counts && occupancy_counts) {

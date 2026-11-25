@@ -7,4 +7,4 @@
 
 其余主题当前仍为材料导航，尚未按样板核验完整交付视图，不能据入口存在推断交付齐备。
 
-主题是用途与有限交付的统一入口，不是对象的独占目录。已有精确目标直接读取原件，不必先遍历这些入口。建立/维护主题使用[可复制模板](topic-template.md)和[NAVIGATION合同](../../NAVIGATION.md#topic-delivery-views)；有限交付的完成判定和上游递归使用[系统规划](../../roles/SYSTEM-PLANNING.md)。
+主题是用途与有限交付的统一入口，不是对象的独占目录。已有精确目标直接读取原件，不必先遍历这些入口。建立/维护主题使用[可复制模板](topic-template.md)和[NAVIGATION合同](../workspace/materials.md#topic-delivery-views)；有限交付的完成判定和上游递归使用[系统规划](../../roles/SYSTEM-PLANNING.md)。

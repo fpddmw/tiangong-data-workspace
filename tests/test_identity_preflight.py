@@ -122,6 +122,17 @@ class IdentityPreflightTests(unittest.TestCase):
         self.assertEqual(result['public_status']['state'],'unavailable')
         self.assertEqual(result['identity_state'],'需登录')
 
+    def test_unclassified_remote_failure_does_not_infer_expiry_from_a_fresh_local_session(self):
+        failed=self.result({'error':{'category':'authentication','code':'AUTH_IDENTITY_REMOTE_REQUEST_FAILED',
+            'message':'Identity operation did not succeed. Inspect the selected environment and authentication state.'}},1)
+        for local,state in [('fresh','身份未核实'),('refresh-required','需刷新'),('missing','需登录')]:
+            with self.subTest(local=local),patch.object(tools.subprocess,'run',side_effect=[
+                    failed,self.result({'data':{'receipt':{'status':'ready','sessionState':local}}})]) as called:
+                result=self.run_preflight()
+            self.assertEqual((result['status'],result['identity_state']),('unavailable',state))
+            self.assertEqual(result['code'],'AUTH_IDENTITY_REMOTE_REQUEST_FAILED')
+            self.assertEqual([c.args[0][6] for c in called.call_args_list],['identity-receipt','status'])
+
     def test_reviewer_does_not_refresh_the_author_account(self):
         self.config={'role':'scientific_reviewer'}
         with patch.object(tools.subprocess,'run') as called:

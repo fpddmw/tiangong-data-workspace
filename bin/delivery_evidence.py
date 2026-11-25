@@ -10,6 +10,7 @@ import os
 import errno
 import sqlite3
 import stat
+from collections import Counter
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -102,17 +103,45 @@ def complete_envelope(body):
             and completeness.get('completeContent') is not False)
 
 
+def public_argv(argv):
+    # Match the installed CLI's outer argument normalization.
+    if argv[:1] == ['--'] and argv[1:2] != ['--']:
+        return argv[1:]
+    if argv[:1] == ['--json'] and len(argv) > 1:
+        tail = argv[1:]
+        split = tail.index('--') if '--' in tail else len(tail)
+        return [*tail[:split], '--json', *tail[split:]]
+    return argv
+
+
 def operation(argv):
     """Only actual public dataset/review operations; never auth responses."""
     if not isinstance(argv, list) or any(not isinstance(a, str) for a in argv):
         return None
-    if len(argv) >= 3 and argv[0] == 'dataset' and argv[2] in ('validate', 'create', 'save', 'get'):
+    argv = public_argv(argv)
+    if len(argv) >= 3 and argv[0] == 'dataset' and argv[2] in ('validate','create','save','get','delete','publish'):
         return ' '.join(argv[:3])
     if argv[:3] == ['dataset', 'model', 'result-group']:
         return 'dataset model result-group'
     if len(argv) >= 2 and argv[0] == 'review' and argv[1] in ('submit', 'resubmit'):
         return ' '.join(argv[:2])
     return None
+
+
+def operation_effect(argv, body=None):
+    """Classify the actual public invocation before trusting its command name."""
+    action = operation(argv)
+    if not action:
+        return None
+    args = public_argv(argv)[len(action.split()):]
+    options = args[:args.index('--')] if '--' in args else args
+    if action.endswith((' get',' validate')) or any(flag in options for flag in ('--help','-h')):
+        return 'read_only'
+    if action == 'dataset model result-group':
+        return 'read_only' if isinstance(body,dict) and body.get('action') in ('inspect','recover') else 'possible_write'
+    if '--dry-run' in options:
+        return 'read_only'
+    return 'possible_write'
 
 
 def _json(root, ref):
@@ -193,6 +222,69 @@ def _binding(value, context):
     return (actor,environment) if actor and environment else None
 
 
+def mutation_attempt(operation_name, doc, request=None):
+    """Join observations of exactly the same native attempt."""
+    if not isinstance(doc,dict):
+        doc={}
+    request=request if isinstance(request,dict) else {}
+    if doc and (doc.get('schemaVersion')!=1 or doc.get('operation')!=operation_name):
+        return None
+    data,context=doc.get('data') or {},doc.get('context') or {}
+    if not isinstance(data,dict) or not isinstance(context,dict):
+        return None
+    if operation_name=='dataset model result-group':
+        receipt=data.get('receipt') or {}
+        observed=('model',data.get('modelId'),data.get('version'))
+        intended=('model',request.get('modelId'),request.get('version'))
+        received=receipt.get('operationId') or data.get('operationId')
+        selected=request.get('operationId')
+        actual=_binding(data,context)
+    else:
+        parts=operation_name.split()
+        review=parts[0]=='review'
+        target=(data.get('request') or {}).get('target') if review else data.get('subject')
+        observed=_subject(target)
+        intended=_subject(request['targets'][0]) if review and request.get('targets') else (
+            parts[1], request.get('id'), request.get('version'))
+        received=context.get('requestId')
+        selected=request.get('requestId')
+        actual=_binding({},context)
+    intended=intended if intended and all(intended) else None
+    observed=observed if observed and all(observed) else None
+    expected=_binding(request,{})
+    if (observed and intended and observed!=intended or received and selected and received!=selected
+            or actual and expected and actual!=expected):
+        return None
+    target,operation_id,binding=observed or intended,received or selected,actual or expected
+    if target and binding and isinstance(operation_id,str) and operation_id:
+        return operation_name,target,*binding,operation_id
+    return None
+
+
+def terminal_mutation(doc):
+    if not complete_envelope(doc) or doc.get('schemaVersion')!=1:
+        return False
+    data=doc.get('data') or {}
+    if not isinstance(data,dict):
+        return False
+    outcome=doc.get('outcome')
+    if outcome=='service_rejected':
+        return doc.get('status')=='failed' and (data.get('receipt') or {}).get('ok') is False
+    if doc.get('operation')=='dataset model result-group':
+        if doc.get('error'):
+            return False
+        if outcome=='draft_validation_failed':
+            return data.get('status')==outcome
+        receipt=data.get('receipt') or {}
+        return (outcome in ('verified','committed_readback_unverified') and data.get('status')==outcome
+                and all(receipt.get(key) for key in ('operationId','revision','savedAt')))
+    if doc.get('operation','').startswith('review '):
+        return (doc.get('status') in ('completed','accepted') and not doc.get('error') and bool(data.get('reviewId'))
+                and outcome in ('review_submitted','review_resubmitted','review_submission_recovered','original_result_returned'))
+    return (_read_success(doc) and (outcome in ('dataset_written','dataset_created','dataset_saved','dataset_deleted','dataset_published')
+            or outcome=='original_result_returned' and data.get('originalResult') is not None))
+
+
 def _time(value):
     try:
         result=datetime.fromisoformat(value)
@@ -203,7 +295,7 @@ def _time(value):
 
 def explicit_files(root, paths, *, home):
     """Freeze only the caller's exact paths, with generated technical identity."""
-    from production_review import scientific_path, _save_fixed
+    from production_review import scientific_path, _save_fixed, freeze_validation_report
     refs, seen = [], set()
     for value in paths:
         path = scientific_path(root, value)
@@ -212,9 +304,14 @@ def explicit_files(root, paths, *, home):
         if digest in seen:
             continue
         seen.add(digest)
-        fixed = _save_fixed(root, Path(home) / 'evidence' / digest / path.name, raw)
+        archive = Path(home) / 'evidence' / digest
+        fixed = freeze_validation_report(root,archive,path,raw) or _save_fixed(root,archive/path.name,raw)
         refs.append({'id': 'file:' + digest, 'version': digest, **fixed})
     return refs
+
+
+def explicit_selection(refs):
+    return [ref for ref in refs if ref.get('id', '').startswith('selected:')]
 
 
 def selected_files(root, paths, *, home):
@@ -286,7 +383,7 @@ def _association_notice(run_id,reason):
     except (OSError,ValueError):pass
 
 
-def _no_dispatch(root, home, record, stage, error):
+def _no_dispatch(root, home, record, stage, error, *, input_resolution=None):
     from production_review import _save_fixed
     failure = {'stage':stage,'reason':type(error).__name__}
     if isinstance(error,OSError) and error.errno is not None:
@@ -298,6 +395,8 @@ def _no_dispatch(root, home, record, stage, error):
         failure['system_code']=error.sqlite_errorname
     elif isinstance(error,ValueError) and stage=='authorization':
         failure['detail']=str(error)
+    if input_resolution is not None:
+        failure['input_resolution']=input_resolution
     if record is not None:
         record.update(finished_at=tasks._now(),exit_code=1,dispatch='not_started',local_failure=failure)
         try:
@@ -306,6 +405,19 @@ def _no_dispatch(root, home, record, stage, error):
             failure['record_unavailable']=True
     print(json.dumps({'error':'Managed write withheld before native dispatch',**failure},ensure_ascii=False),file=sys.stderr)
     return 1
+
+
+def _input_resolution(root, cwd, value, target=None):
+    from production_review import scientific_path
+    info = {'path_scope': 'workspace', 'input_kind': 'absolute' if Path(value).is_absolute() else 'relative'}
+    if info['input_kind'] == 'relative':
+        try:
+            info['base'] = scientific_path(root, cwd, must_exist=False).relative_to(root).as_posix()
+        except (OSError, ValueError):
+            info['base'] = None
+    if target is not None:
+        info['target'] = target.relative_to(root).as_posix()
+    return info
 
 
 def _frozen_stdin(raw, archived):
@@ -337,13 +449,13 @@ def execute_native(root,command,argv,*,env,cwd):
     captured payloads; environments/credentials are never recorded.
     """
     from production_review import scientific_path,_save_fixed
-    from dataset_write_authority import admit, exact_action, public_argv
+    from dataset_checks.write_authority import exact_action
     root,cwd=Path(root).resolve(),Path(cwd).resolve()
     if os.environ.get(CONTEXT_KEYS[0]) != str(root) or not os.environ.get(CONTEXT_KEYS[1]):
         return subprocess.call(command+argv,env=env,cwd=cwd)
     argv = public_argv(argv)
     mutation = exact_action(argv)
-    selected = operation(argv) or (' '.join(argv[:3]) if mutation else None)
+    selected = operation(argv)
     if not selected:
         return subprocess.call(command+argv,env=env,cwd=cwd)
     run_id=os.environ.get(CONTEXT_KEYS[1])
@@ -351,7 +463,7 @@ def execute_native(root,command,argv,*,env,cwd):
         run,home=_capture_home(root,os.environ)
         home=scientific_path(root,home,must_exist=False);home.mkdir(parents=True,exist_ok=False)
     except (OSError,ValueError,KeyError,TypeError,sqlite3.Error) as exc:
-        if mutation:
+        if operation_effect(argv) == 'possible_write':
             return _no_dispatch(root,None,None,'archive_home',exc)
         _association_notice(run_id,type(exc).__name__+': original operation archive unavailable')
         return subprocess.call(command+argv,env=env,cwd=cwd)
@@ -373,18 +485,21 @@ def execute_native(root,command,argv,*,env,cwd):
             try:
                 input_source=scientific_path(root,cwd/input_arg,must_exist=False)
             except (OSError,ValueError) as exc:
-                return _no_dispatch(root,home,record,'input_path',exc)
+                return _no_dispatch(root,home,record,'input_path',exc,
+                                    input_resolution=_input_resolution(root,cwd,input_arg))
             try:
                 source_fd=os.open(input_source,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW|os.O_NONBLOCK)
             except OSError as exc:
-                return _no_dispatch(root,home,record,'input_open',exc)
+                return _no_dispatch(root,home,record,'input_open',exc,
+                                    input_resolution=_input_resolution(root,cwd,input_arg,input_source))
             with os.fdopen(source_fd,'rb') as source:
                 try:
                     if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
                         raise OSError(errno.EINVAL,'Managed input is not a regular file')
                     input_raw=source.read()
                 except OSError as exc:
-                    return _no_dispatch(root,home,record,'input_read',exc)
+                    return _no_dispatch(root,home,record,'input_read',exc,
+                                        input_resolution=_input_resolution(root,cwd,input_arg,input_source))
         else:
             try:
                 input_raw=sys.stdin.buffer.read()
@@ -395,7 +510,7 @@ def execute_native(root,command,argv,*,env,cwd):
         except (OSError,ValueError) as exc:
             return _no_dispatch(root,home,record,'input_archive',exc)
         record['input_bytes']=len(input_raw)
-        # Only these direct dataset mutations have no relative-path operands in their JSON.
+        # The result-group adapter's relative operands are rebased below.
         if input_arg != '-':
             options = [i for i, arg in enumerate(argv) if arg == '--input' or arg.startswith('--input=')]
             i, = options
@@ -408,6 +523,63 @@ def execute_native(root,command,argv,*,env,cwd):
             if output_source.exists():
                 output_before=(hashlib.sha256(output_source.read_bytes()).hexdigest(),output_source.stat().st_mtime_ns)
         except (OSError,ValueError):output_source=None
+    # Group inspect and original-operation recovery are read-only even though
+    # they share the native command with compound writes.
+    body = _json(root,record.get('input_ref')) if selected=='dataset model result-group' else None
+    readonly = operation_effect(argv,body) == 'read_only'
+    inherited=dict(env)
+    for key in (*CONTEXT_KEYS,'HTAM_DSH_CAPACITY_ROOT','HTAM_DSH_CAPACITY_RUN_ID'):
+        if key in os.environ:inherited[key]=os.environ[key]
+    call = (root,command,argv,execution_argv,inherited,cwd,run,home,record,input_arg,input_source,input_raw,
+            input_error,output_source,output_before,readonly)
+    if not mutation:
+        return _perform_native(*call)
+    from dataset_checks.write_authority import freeze_group_input, literal_request, pending_writes, target_lock
+    from contextlib import ExitStack
+    snapshot = None
+    try:
+        execution_raw, snapshot_ref = input_raw, record['input_ref']
+        members=[]
+        try:
+            if mutation==('model','result-group'):
+                execution_raw,members=freeze_group_input(root,home,input_raw,input_source)
+                if execution_raw!=input_raw:
+                    snapshot_ref=_save_fixed(root,home/'execution-input.json',execution_raw)
+                    record['execution_input_ref']=snapshot_ref
+        except (json.JSONDecodeError,UnicodeError) as exc:
+            return _no_dispatch(root,home,record,'input_json',exc)
+        try:
+            snapshot = _frozen_stdin(execution_raw,snapshot_ref)
+        except (OSError,ValueError) as exc:
+            return _no_dispatch(root,home,record,'input_freeze',exc)
+        record['input_transport']='anonymous_regular_file'
+        try:
+            request = literal_request(mutation,execution_raw,inherited)
+        except (json.JSONDecodeError,UnicodeError) as exc:
+            return _no_dispatch(root,home,record,'input_json',exc)
+        if request is None:
+            return _perform_native(*call,snapshot=snapshot)
+        request['members']=members
+        if mutation==('model','result-group'):
+            request['requires_grant']=bool(members)
+        targets=[{**request,'object':member} for member in sorted({request['object'],*members})]
+        with ExitStack() as locks:
+            for target in targets:
+                locks.enter_context(target_lock(root,target))
+            pending=pending_writes(inherited,*targets)
+            return _perform_native(*call, request=request,pending=pending,snapshot=snapshot)
+    except (OSError,ValueError,KeyError,TypeError,sqlite3.Error) as exc:
+        return _no_dispatch(root,home,record,'authorization',exc)
+    finally:
+        if snapshot is not None:
+            snapshot.close()
+
+
+def _perform_native(root,command,argv,execution_argv,inherited,cwd,run,home,record,input_arg,input_source,input_raw,
+                    input_error,output_source,output_before,readonly,*,request=None,pending=None,snapshot=None):
+    from production_review import _save_fixed
+    from dataset_checks.write_authority import admit
+    run_id=run['id']
     errors=[]
     destinations={name:home/(name+'.bin') for name in ('stdout','stderr')}
     streams={}
@@ -415,25 +587,24 @@ def execute_native(root,command,argv,*,env,cwd):
         for name,path in destinations.items():streams[name]=path.open('xb')
     except OSError as exc:
         for stream in locals().get('streams',{}).values():stream.close()
-        if mutation:
+        if not readonly:
             return _no_dispatch(root,home,record,'result_archive',exc)
         _association_notice(run_id,'Original stdout/stderr archive unavailable')
-        return subprocess.call(command+argv,env=env,cwd=cwd)
-    inherited=dict(env)
-    for key in (*CONTEXT_KEYS,'HTAM_DSH_CAPACITY_ROOT','HTAM_DSH_CAPACITY_RUN_ID'):
-        if key in os.environ:inherited[key]=os.environ[key]
-    snapshot=None
+        return subprocess.call(command+argv,env=inherited,cwd=cwd)
     try:
-        if mutation:
+        # A killed launcher can leave streams without a final record. Keep the
+        # exact read/write class and input before the CLI can send anything.
+        journal = {'schema': 'htam.cli-dispatch.v1', 'run_id': run['id'], 'request_id': run['request_id'],
+                   'operation': record['operation'], 'argv':list(argv), 'read_only': readonly, 'input_ref': record.get('input_ref')}
+        try:
+            _save_fixed(root, home/'dispatch.json', (json.dumps(journal, ensure_ascii=False)+'\n').encode())
+        except (OSError, ValueError) as exc:
+            if not readonly:
+                return _no_dispatch(root, home, record, 'dispatch_archive', exc)
+            _association_notice(run_id, 'Original read-only dispatch archive unavailable')
+        if request:
             try:
-                snapshot=_frozen_stdin(input_raw,record['input_ref'])
-            except (OSError,ValueError) as exc:
-                return _no_dispatch(root,home,record,'input_freeze',exc)
-            record['input_transport']='anonymous_regular_file'
-            try:
-                decision = admit(root, run, mutation, input_raw, inherited)
-            except (json.JSONDecodeError,UnicodeError) as exc:
-                return _no_dispatch(root,home,record,'input_json',exc)
+                decision = admit(root, run, request, inherited, pending=pending)
             except (OSError,ValueError,KeyError,TypeError,sqlite3.Error) as exc:
                 return _no_dispatch(root,home,record,'authorization',exc)
             record['write_authority'] = decision
@@ -443,11 +614,11 @@ def execute_native(root,command,argv,*,env,cwd):
                 print(json.dumps({'error': 'Managed mutation withheld', **decision}), file=sys.stderr)
                 return 1
         process=subprocess.Popen(command+execution_argv,env=inherited,cwd=cwd,
-            stdin=snapshot if mutation else subprocess.PIPE if input_arg=='-' else None,
+            stdin=snapshot if snapshot is not None else subprocess.PIPE if input_arg=='-' else None,
             stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         record['dispatch']='started'
     except OSError as exc:
-        if mutation:
+        if not readonly:
             return _no_dispatch(root,home,record,'native_start',exc)
         raise
     finally:
@@ -487,7 +658,7 @@ def execute_native(root,command,argv,*,env,cwd):
                 except OSError:errors.append('stdin_archive_failed')
             try:process.stdin.close()
             except (OSError,ValueError):pass
-    if not mutation and input_arg=='-':
+    if snapshot is None and input_arg=='-':
         input_thread=threading.Thread(target=pipe_input,daemon=True)
         input_thread.start()
         threads.append(input_thread)
@@ -502,7 +673,7 @@ def execute_native(root,command,argv,*,env,cwd):
         for name,path in destinations.items():
             if not any(t.is_alive() for t in threads):
                 record[name+'_ref']={'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
-        if mutation:
+        if snapshot is not None:
             record['input_unchanged'] = True  # Executed bytes were supplied by the host.
         elif input_arg=='-' and (home/'input.json').exists() and not errors:
             input_raw=(home/'input.json').read_bytes()
@@ -556,13 +727,14 @@ def ingest_run(root,run,actor):
 
 class EvidenceSet:
     """One request/continuation collection, retaining per-object bindings."""
-    def __init__(self, c, root, request, returned, reader, *, extra_refs=()):
+    def __init__(self, c, root, request, returned, reader, *, extra_refs=(), through=None):
         from harness_package import author_lineage
         import harness_scope
         self.c, self.root, self.request, self.returned, self.reader = c, Path(root), request, returned, reader
         self.lineage = author_lineage(c, request)
-        self.inventory, self.parsed, self.records, self.selection_missing = {}, {}, [], []
-        self.history = [r for r in harness_scope._returns(c, request['task_id']) if r['request_id'] in self.lineage]
+        self.inventory, self.resolved, self.records, self.selection_missing = {}, {}, [], []
+        self.history = [r for r in harness_scope._returns(c,request['task_id'],request_ids=self.lineage)
+                        if not through or r['created_at']<=through]
         for r in self.history:
             self.add(r['result_ref'])
             for ref in r['artifact_refs']:
@@ -570,6 +742,15 @@ class EvidenceSet:
         for ref in [returned['result_ref'], *returned.get('artifact_refs', []), *extra_refs]:
             self.add(ref)
         placeholders = ','.join('?' for _ in self.lineage)
+        for row in c.execute("""SELECT e.payload_json FROM work_task_events e
+            JOIN work_dispositions d ON d.id=json_extract(e.payload_json,'$.adoption_id')
+            JOIN work_returns r ON r.id=d.return_id
+            WHERE e.task_id=? AND e.kind='review-batch-result' AND r.request_id IN (""" + placeholders + ')',
+            (request['task_id'],*self.lineage)):
+            submission=json.loads(row[0])
+            if submission.get('state')=='accepted' and not through:
+                for key in ('receipt_ref','review_readback_ref','readback_envelope_ref','body_readback_ref'):
+                    self.add(submission.get(key))
         events = c.execute('''SELECT e.*,r.request_id,r.created_at AS run_created FROM work_run_events e
             JOIN work_runs r ON r.id=e.run_id WHERE r.request_id IN (''' + placeholders + ''')
             AND e.kind='delivery-evidence' ORDER BY e.id''', self.lineage).fetchall()
@@ -578,6 +759,8 @@ class EvidenceSet:
             ref = payload.get('record_ref')
             doc = self.peek(ref)
             if not isinstance(doc, dict) or doc.get('schema') != CLI_SCHEMA:
+                continue
+            if through and (doc.get('finished_at') or doc.get('started_at') or event['run_created'])>through:
                 continue
             if doc.get('run_id') != event['run_id'] or doc.get('request_id') != event['request_id']:
                 continue
@@ -605,37 +788,28 @@ class EvidenceSet:
     def add(self, ref):
         if isinstance(ref, dict) and isinstance(ref.get('sha256'), str) and isinstance(ref.get('path'), str):
             self.inventory[tasks._json(ref)] = ref
+            self.resolved.pop(ref['sha256'],None)
 
     def resolve(self, ref):
         if not isinstance(ref, dict):
             return ref
-        try:
-            tasks.evidence_ref(self.root, ref)
+        if self.reader.available(ref):
             return ref
-        except (OSError, ValueError, KeyError, TypeError):
-            for alternative in self.inventory.values():
-                if alternative.get('sha256') != ref.get('sha256'):
-                    continue
-                try:
-                    tasks.evidence_ref(self.root, alternative)
-                    return {**ref, **alternative}
-                except (OSError, ValueError, KeyError, TypeError):
-                    pass
+        digest = ref.get('sha256')
+        if not isinstance(digest,str):
+            return ref
+        if digest not in self.resolved:
+            self.resolved[digest] = next((other for other in self.inventory.values()
+                if other.get('sha256') == digest and self.reader.available(other)), None)
+        if alternative := self.resolved[digest]:
+            return {**ref, **alternative}
         return ref
 
     def peek(self, ref):
-        resolved = self.resolve(ref)
-        key = tasks._json(resolved)
-        if key not in self.parsed:
-            self.parsed[key] = _json(self.root, resolved)
-        return self.parsed[key]
+        return self.reader.peek(self.resolve(ref))
 
     def available(self, ref):
-        try:
-            tasks.evidence_ref(self.root, self.resolve(ref))
-            return True
-        except (OSError, ValueError, KeyError, TypeError):
-            return False
+        return self.reader.available(self.resolve(ref))
 
     def require(self, ref):
         return self.reader.read(self.resolve(ref))
@@ -646,14 +820,14 @@ class EvidenceSet:
         selected, selected_at = [], ''
         for report in choices:
             refs = report.get('artifact_refs', [])
-            exact = [a for a in refs if a.get('id','').startswith('selected:')]
+            exact = explicit_selection(refs)
             if exact:
                 selected = exact
                 selected_at = report.get('created_at', '')
                 break
             if any(body_identity(self.peek(a)) or not self.available(a) for a in refs):
                 selected = list(refs)
-                selected_at = report.get('created_at', '')
+                selected_at = report.get('selection_origin_at',report.get('created_at',''))
                 break
         members = {}
         for ref in selected:
@@ -681,7 +855,57 @@ class EvidenceSet:
                 previous = members.get(identity)
                 if previous is None or not same_body(self.peek(previous), candidate):
                     members[identity] = ref
+        if not exact and (run_id := report.get('run_id')):
+            for identity in self._published_predecessors(members, run_id, cutoff):
+                del members[identity]
         return list(members.values())
+
+    def _published_predecessors(self, members, run_id, cutoff):
+        """Identify published comparison bodies in an automatic author return."""
+        counts = Counter(identity[:2] for identity in members)
+        if all(count == 1 for count in counts.values()):
+            return set()
+
+        working, successors, reads = set(), {}, set()
+        for ref, record, created in self.records:
+            if (created > cutoff or record.get('source') != 'trusted_public_cli'
+                    or record.get('capture_complete') is not True):
+                continue
+            same_run = record.get('run_id') == run_id
+            operation = str(record.get('operation', ''))
+            if same_run and operation.endswith(' get'):
+                reads.add(tasks._json(record.get('stdout_ref')))
+            if not operation.endswith((' validate', ' create', ' save')):
+                continue
+            candidate = self.peek(record.get('candidate_ref'))
+            identity = body_identity(candidate)
+            if (identity not in members or counts[identity[:2]] < 2
+                    or not self._input_matches(record, candidate, scientific=True)):
+                continue
+            working.add(identity)
+            if same_run and same_review_body(self.peek(members[identity]), candidate):
+                successors[identity] = (ref, record['input_ref'])
+
+        comparisons = set()
+        for identity, source_refs in successors.items():
+            kind, identifier, _ = identity
+            dataset_key = 'lifeCycleModelDataSet' if kind == 'model' else kind + 'DataSet'
+            body = canonical_body(self.peek(members[identity]))[dataset_key]
+            publication = body['administrativeInformation']['publicationAndOwnership']
+            preceding = publication.get('common:referenceToPrecedingDataSetVersion')
+            if (not isinstance(preceding, dict) or preceding.get('@refObjectId') != identifier
+                    or not isinstance(preceding.get('@version'), str)):
+                continue
+            prior = (kind, identifier, preceding['@version'])
+            if prior not in members or prior in working:
+                continue
+            facts = self.native_facts(members[prior])
+            if any(tasks._json(ref) in reads for ref in facts['published']) and not any(
+                    facts[name] for name in ('structure', 'saved', 'submitted', 'unknown_effects')):
+                comparisons.add(prior)
+                for ref in source_refs:
+                    self.require(ref)
+        return comparisons
 
     def documents(self):
         result = []
@@ -799,6 +1023,7 @@ class EvidenceSet:
                     validation_digests[content_digest(value, ordered=ordered)] = source
         digests = set(digest_sources)
         submissions, submitted_readbacks = [], []
+        pending, terminal=[],set()
         for ref, doc, provenance in documents:
             record_ref, record = provenance or (None, None)
             operation_name = doc.get('operation', '')
@@ -809,8 +1034,12 @@ class EvidenceSet:
             target = _subject((data.get('request') or {}).get('target')) if operation_name in ('review submit','review resubmit') else None
             relevant = subject == ident or target == ident or self._input_matches(record, body)
             if doc.get('schemaVersion') == 1 and relevant:
-                if doc.get('outcome') in ('unknown', 'effect_unknown') and operation_name.endswith((' create', ' save', ' submit', ' resubmit', ' publish')):
-                    self.require(ref);facts['unknown_effects'].append(ref)
+                if operation_name.endswith((' create', ' save', ' delete', ' submit', ' resubmit', ' publish')):
+                    key=mutation_attempt(operation_name,doc)
+                    if key and terminal_mutation(doc):
+                        terminal.add(key)
+                    if doc.get('status')=='unknown' or doc.get('outcome') in ('unknown','effect_unknown','write_outcome_unknown'):
+                        pending.append((key,ref))
                 if (operation_name.endswith((' create', ' save')) and _read_success(doc)
                         and doc.get('outcome') in ('dataset_written','dataset_created','dataset_saved')
                         and doc.get('error') is None and context.get('actor', {}).get('id')
@@ -822,6 +1051,11 @@ class EvidenceSet:
                         if digest in digest_sources:self.require(digest_sources[digest])
                         if record_ref:self.require(record_ref)
                         facts['saved'].append(ref)
+                        readback=data.get('readback') or {}
+                        if readback.get('contentMatchesIntent') is True and _subject(readback.get('subject'))==ident:
+                            # The installed typed CLI compared the full remote row
+                            # to these exact write bytes after acknowledgement.
+                            facts['full_readback'].append(ref)
                 if (operation_name.endswith(' get') and doc.get('outcome') == 'dataset_read'
                         and _read_success(doc) and context.get('observation', {}).get('source') == 'remote'):
                     complete = doc.get('completeness', {})
@@ -921,6 +1155,10 @@ class EvidenceSet:
                 else:
                     self.require(ref)
                     facts['reading_limits'].append({'ref':ref,'reason':'Bound gate contains a failed, incomplete or unavailable original native check.'})
+        for key,ref in pending:
+            if key not in terminal:
+                self.require(ref)
+                facts['unknown_effects'].append(ref)
         for ref,context,review in submissions:
             for readback,content_ref,read_context,subject in submitted_readbacks:
                 issued=_time(review.get('created_at') or (context.get('observation') or {}).get('time'))
@@ -960,3 +1198,88 @@ def return_artifacts(c, root, request, result):
         if previous['artifact_refs']:
             return previous['artifact_refs']
     return []
+
+
+def handoff_effects(c, root, request, *, run=None, result=None, at_original=True, return_id=None):
+    """Mechanical evidence for both the original owner and the next reader."""
+    import harness_scope as scope
+    if request['kind']!='plan' or request['independent']:
+        return None
+    if run and result is None and run.get('latest_receipt'):
+        from agent_base import read_receipt
+        try:
+            result=read_receipt(root,run['latest_receipt']).get('result')
+        except (OSError,ValueError,KeyError):
+            result=None
+    result=result if isinstance(result,dict) else {}
+    through=run['updated_at'] if run and at_original else None
+    cutoff=through or tasks._now()
+    original=scope._returns(c,request['task_id'],request_ids=[request['id']])
+    returned=next((item for item in reversed(original) if item['id']==return_id
+                   or not return_id and (not run or item['run_id']==run['id'])),None)
+    artifacts=list(result.get('reviewed_artifacts') or [])
+    artifacts.extend({'path':row['path'],'sha256':row['sha256']} for row in
+        (result.get('turn_activity') or {}).get('ending_turn_verified_progress',[])
+        if row.get('kind')=='artifact' and row.get('path') and row.get('sha256'))
+    if returned is None:
+        returned={'result_ref':request['input_ref'],'artifact_refs':artifacts,'created_at':cutoff,
+                  **({'run_id':run['id'],'selection_origin_at':run['created_at']} if run else {})}
+    pool=EvidenceSet(c,root,request,returned,scope.Evidence(root),through=through)
+    endpoint=scope.endpoint(scope.effective_contract(c,request))
+    rows=[]
+    for artifact in pool.artifacts:
+        subject=body_identity(pool.peek(artifact))
+        if not subject:
+            continue
+        facts=pool.native_facts(artifact)
+        saved=[r for r in facts['saved'] if r]
+        readback=[r for r in facts['full_readback'] if r]
+        unknown=facts['unknown_effects']
+        if unknown:
+            state='effect_unknown'
+        elif facts['submitted']:
+            state='submitted'
+        elif saved and readback:
+            state='saved_draft'
+        elif saved:
+            state='write_acknowledged_readback_pending'
+        else:
+            state='candidate_only'
+        rows.append({'subject':subject,'state':state,'candidate_ref':artifact,'write_refs':saved,
+                     'readback_refs':readback,'submission_refs':facts['submitted'],'unresolved_refs':unknown})
+    attempts=Counter(not_started=0,possible_write=0,read_only_or_validation=0)
+    prepared={}
+    selected={row['candidate_ref']['sha256'] for row in rows}
+    for _,record,_ in pool.records:
+        if run and record.get('run_id')!=run['id']:
+            continue
+        if record.get('dispatch')=='not_started':
+            attempts['not_started']+=1
+        elif operation_effect(record.get('argv'),pool.peek(record.get('input_ref')))=='possible_write':
+            attempts['possible_write']+=1
+        else:
+            attempts['read_only_or_validation']+=1
+            candidate=record.get('candidate_ref') or {}
+            if (run and record.get('operation','').endswith(' validate') and record.get('capture_complete') is True
+                    and record.get('input_unchanged') is True and candidate.get('sha256') in selected):
+                prepared[candidate['sha256']]=candidate
+    adoption=scope.request_progress(c,request)
+    goal=(result.get('native_session_observation') or {}).get('native_goal') or {}
+    return {'request_id':request['id'],'run_id':run['id'] if run else None,'requested_endpoint':endpoint,
+            'return_id':returned.get('id'),'object_counts':dict(Counter(row['state'] for row in rows)),
+            'members':rows,'native_calls':dict(attempts),'unread_candidate_refs':pool.selection_missing,
+            'prepared_candidate_refs':list(prepared.values()),
+            'owner_adoption':adoption['adopted'],'remaining_scope':adoption['remaining_scope'],
+            'reviewed_count':len(result.get('requested_review_ids') or ()),
+            **({'native_goal':{k:goal[k] for k in ('phase','roundsStarted','maxGoalRounds') if k in goal}} if goal else {}),
+            'responsible_for_draft':request['recipient_actor'] or (run or {}).get('native_identity')}
+
+
+def read_handoff_effects(root, request, *, run=None, result=None, return_id=None):
+    from contextlib import closing
+    try:
+        with closing(tasks._connect(root,True,timeout=1)) as c:
+            c.execute('BEGIN')
+            return handoff_effects(c,root,request,run=run,result=result,at_original=not return_id,return_id=return_id)
+    except (OSError,ValueError,KeyError,TypeError,sqlite3.Error):
+        return {'request_id':request['id'],'state':'original_effect_evidence_unavailable'}

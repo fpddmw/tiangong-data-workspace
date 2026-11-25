@@ -8,11 +8,13 @@
 
 五态分别是未安排、已承担待交付、已验收、本方已提交、原委托方已处置。关系未核显示unknown，不预填完成。承接、作者明确返回覆盖、主审采用和最新已观察执行分别看；“已承担”不表示仍运行，局部返回不外推全request。历史采用未注明stage/final时保留原意义，显示验收层级待核。
 
-Hook按启动、恢复、压缩及重要事实变化提供短职责卡、完整计数和准确入口；卡片和列表是预览。结论与对象、版本、用途及限制一起读取，未展开不代表没有限制。使用`--detail`取原事件及准确原件；`work-show/work-packages/work-scope/context --output /ABS/FILE.json`完整落盘，避免长stdout丢失。
+Hook 按启动、恢复、压缩及重要事实变化提供短职责卡、完整计数和准确入口。`work-show` 的 `current_plan` 打开当前接续页，`commitment.frozen_ref` 按哈希打开已接受的承诺。Hook 分别给出两处地址。结论与对象、版本、用途及限制一起读原件。`work-show --history` 分页取原事件，`--detail` 展开原任务记录，`--wave` 读取波末截止点。`work-show/work-packages/work-scope/context --output /ABS/FILE.json` 可保存查询结果。
+
+建包时冻结原目标。负责人确认原用途、验收终点、范围、决定性接口或授权投入改变时，用 `work-revise --task TASK --base-sha256 HASH --note 新基线.md --reason '原决定的理由'`。已有决定文件时用 `--reason-file 原决定.md`。受影响项可以重复给 `--affected-scope` 或 `--affected-request`。HASH 取当前实际读过的基线。日常进展从原账本读取。
 
 ## 登记范围与一份合同
 
-[主审](../../roles/task-lead.md)在自己的会话中用原生子智能体协助定制作计划。确定要制作的对象、用途及验收边界后，再用下面的 `work-request` 和 `work-dispatch` 派发制作包。
+[主审](../../roles/task-lead.md)确定要制作的对象、用途和验收终点后，用 `work-request` 和 `work-dispatch` 派发制作包。需要调研的部分可并行使用主审已获授权的原生子智能体协助定计划。
 
 ```sh
 .venv/bin/python bin/harness.py work-create --brief 原目标.md --owner 主审THREAD_ID --contract 合同.json
@@ -23,7 +25,7 @@ Hook按启动、恢复、压缩及重要事实变化提供短职责卡、完整�
 .venv/bin/python bin/harness.py work-dispatch --request REQUEST --execute
 ```
 
-合同集中写`purpose`、`endpoint`、`scope_boundary.in_scope/out_of_scope`、`acceptance.text/refs`、`authority_refs`及可空的`interfaces.text/refs`。无额外排除也如实说明；不匹配固定用语。完整brief承载产品/参考基准、证据、已有资产和背景，作者选择方法、工具与迭代。引用可给原文件路径，由工具保存哈希；授权引用不是新增权限。
+合同集中写 `purpose`、`endpoint`、`scope_boundary.in_scope/out_of_scope`、`acceptance.text/refs`、`authority_refs` 及 `interfaces.text/refs`。子委派沿用请求绑定时的父合同，只需写本子包的具体用途、终点或其他差异。父范围的排除边界继续有效。完整 brief 承载产品或参考基准、证据、已有资产和背景。作者选择方法、工具与迭代。原文件引用经工具保存哈希。执行仍核当时的账号、对象与动作权限。
 
 本次请求可用 `work-dispatch --config 配置路径 --execute` 明确选择宿主；[Devin/SWE-2配置与接续](../../docs/tools/devin-host.md)复用同一任务、合同、范围、原成果和返回。Devin与DSH各保有真实Session，跨宿主接手用同任务的新明确委派，先查原在途/停止/未知尝试；不把新宿主伪装成原Session恢复。全局DSH绑定不因单次选择改变。
 
@@ -41,13 +43,23 @@ Hook按启动、恢复、压缩及重要事实变化提供短职责卡、完整�
 
 主审把具备开工条件的一批工作集中派出。活跃时处理能推进的待办，及时接回提前返回的成果，按需要采用、安排返修或续派。
 
-**手头无事可推进、只剩等待在途工作或外部依赖时，立即一次休眠满 30 分钟。** 休眠从进入纯等待时开始。把整段等待交给宿主，短时心跳和等待句柄的 `pending` 留在宿主内处理，模型到点再恢复。醒来集中查看一次原运行与新回执。有事就继续做，仍只剩等待就再休眠满 30 分钟。
+用 `work-show --mine` 查看原委派的全部范围、剩余终点和原作者状态，再用 `work-show --id TASK --scope SCOPE_ID` 查某项的原尝试、已确认覆盖的回件和等待依据。跨项旧单中覆盖待核的回件按原请求归组，用 `work-show --id REQUEST` 逐件读。从 `original_brief_ref` 核委派用途，从 `current_plan_path` 进入建模者使用说明。波末或首次转入纯等待时，对照已采用分支的用途限制，再决定还有哪项可独立推进。新委派按请求显示；同一范围有待核原尝试时，打开提示的 run 和只读派工预览，核对实际对象、原写者及写入效果。作者实际席位从对应宿主的 `work-capacity` 读取；有独立可办的材料时由主审续派。
+
+**只剩等待时，一次交给宿主连续等待 30 分钟。** 用 `work-show --id TASK --wait-seconds 1800 --after CURSOR` 等本人事项。多包可重复给 `--id`，或用 `--mine`。有事可做就处理，提前返回就接回、采用或续派。宿主的单次等待会在有待办时返回，安静期间由宿主等满 30 分钟。游标记录展示，处置或有效暂缓才结束待办。普通超时沿已核过的依赖接续，发生实质变化时再判断受影响的工作。
+
+需要暂缓一件时，用 `work-wait --task TASK --item ITEM` 引用 `work-show` 返回的待办，附 `--for-request REQUEST`、`--for-file 原件` 或 `--until 带时区的时刻`。已核实的外部依赖可加 `--external` 并引用其原件。条件变化时只恢复受影响的待办。原委派的合同、输入和宿主就绪时，`work-show` 直接指向派工。波末用 `work-wave --task TASK --decision 原继续或收束决定ID` 记录当时事实。每两波提醒原总主复核，异常提前。总主处置可在 `work-dispose` 引用 `--wave 书签ID`。
 
 ## 作者与独审
 
+独审意见交作者；主审采用后交给使用者；改变原授权的取舍交委托方。需要参考写法时，见[不同证据条件下的交接](../dataset-review/reply-templates/交接示例.md)。
+
 作者按合同核库取证、制作、自查，并用`request_review`给出准确候选路径与科学问题。有原生Goal的宿主自行维护Goal；Devin按原brief和合同在持久Session的一次调用内连续推进，当前没有已验证的Goal API。宿主冻结候选、保留实际独审身份，启动独立只读OS作业；作者调用结束不取消独审。同模型家族允许，不能复用作者Session自审。
 
+新作者请求交一项能够独立验收的责任。同一单元确需交接时，沿 `work-request --continues REQUEST` 关联原范围、回件和已有轮次，实际接续仍核原尝试、停止和数据效果。多材料旧单的各项若可分别验收，用 `work-show --id REQUEST` 查整包余项及重叠请求；主审核清旧写者和迟到意见后沿相应单元继续。不同用途从原任务另行委派。已有储备的任务在父合同 `reserve` 写明 `scope_ids`、`core_scope_ids` 和 `max_requests`。核心达到终点或仅依赖已核实的外部条件时，按原授权投放已就绪的储备。
+
 同一委派和对象的返修可通过 `prior_review_id` 指定已返回的原独审。独审可直接读取原意见、两次冻结稿、差异和已知消费者。另用 `supersedes_review_id` 指定同一作者的一个未开始旧审。新版登记并冻结后，原队列核准撤换。已领取、已完成或归属待核的旧审返回其实际状态；作者可继续原工序或读取原审。
+
+同一对象和用途的可确认前审自动带入，原说明含可唯一核对的原审号时也能定位。有歧义时提供原件供作者和独审选择。两个审阅入口共用三轮自主预算，完整独立意见消耗该轮。追加时，主审用 `work-decision-record --review 原作者请求或审号 --add 1 --reason '补审改后的干基分母'`。同次审阅涵盖多个已用尽预算的对象时，按入口返回的准确对象加 `--object`。作者沿原冻结请求接续。
 
 `review_result`默认立即观察，显式`wait_seconds`可选0–600秒并可取消。取件先核原生/已落盘事实，保留原review_id；安静不等于死亡。作者继续独立工作，意见到达后返修、复核或有据解释分歧。部分意见可读，失败或中断不冒充完整审阅。
 
@@ -62,14 +74,16 @@ Hook按启动、恢复、压缩及重要事实变化提供短职责卡、完整�
 
 该审阅brief给出冻结候选及准确科学问题；合同沿上面的同一字段声明只读审阅范围和evidence终点。旧线程读件不要求补格式，新开审阅的首次派发仍使用同一集中检查。
 
-科学结论有supported、supported_with_limits、material_issue、not_assessed四类，说明准确用途、候选、依据、问题或未评估含义。明确原意见可由接收者一次索引，自动保留原审阅者与冻结候选，不需唤醒审阅者补标签；原文未作判断时保持未评估。受限结论是否符合本任务用途，由主审明确采用。
+独审和作者各在正常原件写一次，审阅入口保留原文、先前意见、作者处理和两版冻结候选。完整回件按原返回及相关执行事实计轮。已撤下的排队请求、已确认未评估、无意见的终止及失败按各自记录处理。`work-review-record` 供引用已明确的原结论。遇独立确认修好后真正复发并需主审裁决，可沿同一动作加 `--recurs-after EARLIER_RETURN` 并引用现有意见。其余复核和采用直接读原文。受限结论是否符合任务用途由主审决定。
 
 完整复审原文明确解决并替代哪份原意见时，有原任务索引权限的负责人可在同一`work-review-record`加`--supersedes 原REVIEW_RETURN`（可重复），依据仍用该完整新意见；工具核同一作者责任链、先前独审及全部原对象身份被新冻结包覆盖。两份原文、结论及辅助报告均保留；纯文字原委派复用其已冻结索引，规范数据对象才定义此处的目标身份。取代只对新意见实际覆盖的当前正文生效。没有明确取代关系时不按时间新旧清掉material_issue；也不让已明确解决的问题永久阻断未变成员。索引不替代主审用途采用。
 
 ## 随时返回、采用与完成
 
+DSH 和 Devin 的作者在原生 final 写交付结论、限制及工件路径，独审直接交完整意见。宿主用原 Session 和 run 自动登记回件，主审从 `work-show --id REQUEST` 接回。下面的 `work-return` 供有任务库写权的会话登记手工报告，或按原 run 补关联原件。
+
 ```sh
-.venv/bin/python bin/harness.py work-return --request REQUEST --result 原报告.md --scope SCOPE_ID
+.venv/bin/python bin/harness.py work-return --request REQUEST --result 原报告.md
 .venv/bin/python bin/harness.py work-return --run RUN
 .venv/bin/python bin/harness.py work-return --run RUN --candidate /ABS/候选.json --artifact /ABS/原生回执.json
 .venv/bin/python bin/harness.py work-dispose --return-id RETURN --use adopt --decision 用途与限制.md --scope SCOPE_ID
@@ -79,15 +93,13 @@ Hook按启动、恢复、压缩及重要事实变化提供短职责卡、完整�
 .venv/bin/python bin/harness.py work-complete --task TASK --note 完成依据.md
 ```
 
-阶段成果、局部报告、独审意见和失败任何时候均可接回；scope可选，缺覆盖元数据不拒收，不据final措辞推出全量覆盖。adopt/revise/hold/reject保存原用途决定；adopt默认stage，不完成范围。final只用于准确版本、明确覆盖与终点检查满足的采用。`--checks`可引用本服务生成且指纹仍匹配的检查文件，手填ready/pass不生效。原生工具仍核真实账号、所有权、前像、精确授权及写后读回。
+阶段成果、局部报告、独审意见和失败随时可接回。普通原文即可交付，作者可自行标出覆盖。`adopt` 默认阶段采用。最终采用由主审用 `--acceptance final --scope` 选定范围，沿回件核准确正文和终点。作者自报覆盖留在原件。`--checks` 可引用本服务生成且指纹仍匹配的检查文件。原生工具仍核真实账号、所有权、前像、精确授权及写后读回。
 
-有多个历史版本时，重复 `--candidate` 选定本次交付的完整准确候选集合。可提供规范正文或带完整正文的准确原生读回；`--artifact` 单独关联保存、独审和审核记录。已有旧版本及意见留在原记录，同一对象的后继版显示原意见和改动，新版的科学采用依原作者处理和主审有据判断。父范围另需送审时，草稿可按子请求终点最终采用。父范围继续显示待正式送审，补关联根审核的实际回执和读回后由主审沿同一采用入口确认。
+有多个历史版本时，重复 `--candidate` 选定本次交付的完整准确候选集合。可提供规范正文或带完整正文的准确原生读回。`--artifact` 单独关联保存、独审和审核记录。后继版显示原意见和改动，新版科学采用依原作者处理和主审判断。父范围另需送审时，草稿可按子请求终点最终采用。同一采用的候选均有已核实的原生送审回执及读回后，父范围达到 `submitted`。下一岗从 `work-show` 的审核号、原作者请求和读回入口接件。[逐根送审](../dataset-review/送审准备与实际送审.md)
 
-原意见后作者已返修或作有据解释，主审读完整原意见、作者处理及当前正文，明确接受其适用于原用途时，可在原stage adopt用`--apply-review 原REVIEW_RETURN`及`--handling 原作者处理文件`补关系（均可重复）。仅原任务owner/sponsor可作此判断；程序核原独审身份与作者责任链、原评估结论、实际文件及当前准确对象/正文，并将主审判断另存原采用事件。原material_issue仍是原独审对其冻结稿的结论；有据处理和本次适用判断归当前主审，不改写成审阅者的新supported。未明确处理的问题继续阻断，not_assessed不能替代独立评估，新对象不借旧意见，后续正文或用途变化也不自动沿用。首次关系可按 stage 登记，也可在同一次 final 采用中明确引用。接手时用 `work-check --request REQUEST --for handoff --summary` 查看准确候选、意见和作者原件，以及每件和整包的待核状态。沿返回的 `check_ref` 读完整证据；保存、读回及授权按实际终点核实。
+作者返修或作有据解释后，主审读完整原意见、作者处理和当前正文，用同一次 `work-dispose --apply-review 原REVIEW_RETURN --handling 原作者处理文件` 接回。程序核独立身份、作者责任链、原回件、冻结候选和原用途。普通原文可以直接引用，已有明确索引的结论和实质问题仍可追，`not_assessed` 保留其未评估状态。主审可按适用范围做阶段或最终采用。后续对象、正文或用途变化由负责人重新判断。用 `work-check --request REQUEST --for handoff --summary` 定位准确候选、意见和作者原件，沿 `check_ref` 读完整条件，按实际终点核保存、读回和授权。
 
 受管理的公共CLI调用将完整输入、stdout/stderr及本次新输出留在原run的`delivery/operation-*/`，由可信宿主关联原账本。补保存的后续turn复用原准确候选与各自已有意见、检查及保存读回；空coverage不会清掉文件关系。`--artifact`可重复，冻结所给准确文件，重复关联幂等；`--request … --result …`也可补文件。归档/索引故障只影响自动关联，保留原动作结果，沿原run重读或补原`record.json`，不重跑成功或未知写入。独立CLI没有run上下文仍正常使用。检查直接读原生完整报告，不要求lca-gate外壳；显示实际覆盖与notChecked，候选变化只影响相应成员的证据绑定。当前正文有差异时保留原意见和准确差异入口，由负责agent判断适用性。
-
-Devin作者和独审保存普通报告并在final给准确路径；运行器自动保存原文、实际Session和run/return，主审沿原入口读回。它们的文件/命令权限不开放 `.control` 管理写入，无需再执行 `work-return` 或手写技术字段；科学范围覆盖与最终采用仍由原负责人按完整原件判断。
 
 `work-complete`先留原说明再核当前全范围。未满足时保存completion-pending和具体差额，任务保持开放；补齐后同一文件可重试。成功、并发重试只转换一次；`work-reopen`后的新生命周期重新判断。普通完成不恢复暂停/取消，不解除未知数据效果。科学“范围已完整”的判断仍由主审对照原委派负责。
 
@@ -95,7 +107,7 @@ Devin作者和独审保存普通报告并在final给准确路径；运行器自�
 
 主审及时接回并持续推进全部余项。当前计划就地维护有效目标/范围/授权、承接与跨包依赖、下一步投入及取舍；部分交付或依赖变化足以改变安排时替换相应段落并引用原证据。运行时点、重试和回执自动入原账本，退出当前指挥正文的旧决定仍可追溯；不要求固定标题、复盘表或另写恢复文件。
 
-本工作区DSH模型推进为worker和reviewer各6席，总额12；原队列按角色分别FIFO，一类满额不阻挡另一类。原入口一次提交，满额自动等待并保持同一请求/Session；受控`review_result`等待让出worker席，回复模型前在worker池重新取席，原执行租约和stop保留。排队不算业务进度。用`harness.py work-capacity`只读核实际占用、队列、过渡旧进程与等待原因，取消/stop沿原run。准确运行边界见[宿主容量说明](../../docs/tools/production-host.md#dsh共享容量)。
+本工作区 DSH 和 Devin 两个宿主分别有 worker 和 reviewer 各 6 席，每个宿主总额 12；原队列按角色分别FIFO，一类满额不阻挡另一类。原入口一次提交，满额自动等待并保持同一请求/Session；受控`review_result`等待让出worker席，回复模型前在worker池重新取席，原执行租约和stop保留。排队不算业务进度。用`harness.py work-capacity --host dsh`或`--host devin`只读核对应宿主的实际占用、队列、过渡旧进程与等待原因，取消/stop沿原run。准确运行边界见[宿主容量说明](../../docs/tools/production-host.md#dsh共享容量)。
 
 ## 原Session恢复与停止
 
@@ -103,7 +115,7 @@ Devin作者和独审保存普通报告并在final给准确路径；运行器自�
 .venv/bin/python bin/harness.py work-dispatch --request REQUEST --execute --continue --run-id ORIGINAL_RUN
 ```
 
-普通dispatch/status/read-result只观察，不自动恢复。技术continue沿原brief和有效决定，核请求链、原生Session、进程及进程组；管理进程退出、空锁、无新输出都不单独证明执行已结束。原active Goal在获准技术接续时恢复原activation，保留目标、预算和历史；paused/complete/blocked按原事实处理。新增业务意见可用`--instructions 原说明.md`，与`--continue`互斥。
+普通 dispatch/status/read-result 只观察。技术 `--continue` 沿原 brief 和有效决定，核请求链、原生 Session、进程及进程组。原 active Goal 在获准技术接续时恢复原 activation，保留目标、预算和历史。原单元余项可用 `--instructions 原说明.md` 接续。原单元已交清时，同一用途的明确返修可附 `--basis 原独审回件或返修决定ID`；新用途、新独立终点从原任务另派请求。
 
 DSH原运输排队后退出时，`--read-result`若显示 `abandoned_before_start`，原负责人可用返回的 `--execute --continue --run-id` 命令取回原intent。程序再核原账本、完整输入和执行退出，按原序号、配置与目标Session接续。仍为 `launch_unresolved` 时沿原回执查证；有效stop继续约束原运行。
 

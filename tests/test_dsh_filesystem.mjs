@@ -5,7 +5,7 @@ import {pathToFileURL} from 'node:url'
 import {spawnSync} from 'node:child_process'
 import {mkdtempSync,mkdirSync,rmSync,existsSync} from 'node:fs'
 import {resolve,join} from 'node:path'
-import {scopedPolicy} from '../bin/dsh_policy.mjs'
+import {scopedPolicy} from '../bin/dsh/policy.mjs'
 const require=createRequire(process.argv[2])
 const native=name=>import(pathToFileURL(require.resolve('@deepseek-ai/'+name)))
 const [{Context},{SandboxPolicyService},{LocalSandboxProvider},{workspaceWritableRoots}]=await Promise.all([

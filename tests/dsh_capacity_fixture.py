@@ -44,7 +44,8 @@ def main():
             lease.intent();(root/(run_id+'.claim-ready')).touch()
             while True:time.sleep(.03)
         lease.intent()
-        cap = dsh_capacity.Capacity(root, lease, kind, tasks.verified_actor(root),provider='configured-dsh')
+        host = tasks.read_run(root, run_id)['target_host']
+        cap = dsh_capacity.Capacity(root, lease, kind, tasks.verified_actor(root), provider='configured-dsh', host=host)
         def guard():
             if tasks.read_run(root, run_id)['stop_requested']:
                 raise StopRequested('Original queued run was stopped', run_id)

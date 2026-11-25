@@ -16,9 +16,9 @@ import time
 
 import agent_runtime as runtime
 from codex_host import CodexHost, HostError, safe_diagnostic
-import harness_maintenance
+from task_ledger import maintenance as harness_maintenance
 from harness_hosts import ROUTE_ADAPTERS, installed_program, supports
-import harness_sessions
+from task_ledger import sessions as harness_sessions
 import harness_tasks as tasks
 import workspace_files as entry
 import production_review
@@ -44,11 +44,20 @@ def _return_from_original_run(root, actor, run, request):
     readback = runtime.Runtime(root).readresult(run_id=run['id'], config_path=run['config_ref']['path'],
         role=role, evidence_home=str(Path(receipt['path']).parent))
     delivery = readback.get('management_return') or {}
-    return tasks.read_return(root, delivery['return_id']) if delivery.get('return_id') else readback
+    if not delivery.get('return_id'):
+        return readback
+    returned=tasks.read_return(root,delivery['return_id'])
+    if effects:=readback.get('delivery_effects'):
+        returned['delivery_effects']=effects
+    return returned
 
 
 def return_result(root, actor, path=None, *, request_id=None, run_id=None, scope_ids=(),artifact_paths=(),candidate_paths=()):
-    from delivery_evidence import explicit_files, selected_files
+    from delivery_evidence import explicit_files, read_handoff_effects, selected_files
+
+    def projected(request, returned, run=None):
+        effects=read_handoff_effects(root,request,run=run,return_id=returned['id'])
+        return {**returned,**({'delivery_effects':effects} if effects else {})}
 
     def associate(home, previous):
         linked = explicit_files(root,artifact_paths,home=home)
@@ -64,18 +73,20 @@ def return_result(root, actor, path=None, *, request_id=None, run_id=None, scope
         if path is not None:
             raise ValueError('Read the original native report with --run; separate work uses its own --request and --result.')
         run = tasks.read_run(root, run_id)
-        returned=_return_from_original_run(root, actor, run, tasks.read_request(root, run['request_id']))
+        request=tasks.read_request(root,run['request_id'])
+        returned=_return_from_original_run(root, actor, run, request)
         if not scope_ids and not artifact_paths and not candidate_paths:return returned
         if 'result_ref' not in returned:raise ValueError('Original run has no complete report to index; partial reports can always use --result.')
         from harness_scope import _returns
         with contextlib.closing(tasks._connect(root,True)) as c:
             current=next((r for r in _returns(c,tasks.read_request(root,run['request_id'])['task_id']) if r['id']==returned['id']),returned)
         artifacts,linked=associate(Path(run['latest_receipt']['path']).parent,current['artifact_refs'])
-        return tasks.mutate(root,'return',actor,{'id':'return-association:'+runtime.digest(tasks._json([returned['id'],list(scope_ids),linked]).encode()),
+        registered=tasks.mutate(root,'return',actor,{'id':'return-association:'+runtime.digest(tasks._json([returned['id'],list(scope_ids),linked]).encode()),
             'request_id':run['request_id'],'run_id':run_id,'native_receipt':run['latest_receipt'],
             'result_ref':returned['result_ref'],'summary':returned['summary'],
             **({'artifact_refs':artifacts} if linked else {}),
             **({'coverage':list(scope_ids)} if scope_ids else {})})
+        return projected(request,registered,run)
     request = tasks.read_request(root, request_id)
     if path is None:
         raise ValueError('Provide the original result file or stdin.')
@@ -91,8 +102,9 @@ def return_result(root, actor, path=None, *, request_id=None, run_id=None, scope
     else:contribution.pop('artifact_refs',None)
     ident = 'result:' + hashlib.sha256(tasks._json([request_id, tasks.actor_key(actor), ref,list(scope_ids),linked]).encode()).hexdigest()
     contribution.pop('coverage',None);contribution.pop('remaining_scope',None)
-    return tasks.mutate(root, 'return', actor, {'id':ident, **contribution,
+    registered=tasks.mutate(root, 'return', actor, {'id':ident, **contribution,
         **({'coverage':list(scope_ids)} if scope_ids else {})})
+    return projected(request,registered)
 
 
 def _program_metering(root, request):
@@ -105,6 +117,8 @@ def _program_metering(root, request):
 def _review_subject(request_id,packet):
     # Location is not scientific identity. This also recognizes original
     # frozen packets retained under their historical archive paths.
+    if packet.get('request_identity'):
+        return packet['request_identity']
     artifacts=sorted([[a.get('id',a.get('path')),a.get('version',a.get('sha256')),a.get('sha256')]
         for a in packet['artifact_refs']],key=tasks._json)
     evidence=sorted([ref['sha256'] for ref in packet['evidence_refs']])
@@ -155,17 +169,37 @@ def _register_review_packet(root, worker, request, packet, ident):
         packet = frozen_packet
     else:
         from production_review import _fix_artifact
+        from harness_scope import contract, contract_refs
+        from scientific_review.delta import prior_candidates
+        with contextlib.closing(tasks._connect(root,True)) as connection:
+            agreement = contract(connection, 'request', request['id'])
+            body = (agreement or {}).get('body', {})
+            candidate_consumers = contract_refs(body)
+        purpose = body.get('purpose') or request['input_ref']['sha256']
+        packet = {**packet, 'request_identity': _review_subject(request['id'],packet),
+                  'scientific_purpose': purpose}
+        if not packet.get('prior_review'):
+            prior, choices = prior_candidates(root,request,packet)
+            if prior:
+                packet['prior_review'] = prior
+            elif choices:
+                packet['prior_review_candidates'] = choices
         frozen=[_fix_artifact(root,directory,artifact) for artifact in packet['artifact_refs']]
         replacements={a['path']:{'path':b['path'],'sha256':b['sha256']} for a,b in zip(packet['artifact_refs'],frozen)}
         packet={**packet,'artifact_refs':frozen,
             'evidence_refs':[{**ref,**replacements.get(ref['path'],{})} for ref in packet['evidence_refs']]}
         if prior := packet.get('prior_review'):
-            from review_delta import freeze
+            from scientific_review.delta import freeze
+            candidates = [ref for ref in candidate_consumers if Path(ref['path']).suffix in ('.json','.jsonl')]
+            packet['consumer_refs'] = [_fix_artifact(root,directory,ref) for ref in candidates
+                                       if not tasks.check_inputs(root,[ref])]
             packet['focus'] = freeze(root,directory,packet)
             packet['evidence_refs'] += [prior['submission_ref'],prior['opinion_ref'],
-                                       packet['focus']['index_ref'],packet['focus']['delta_ref']]
+                                       packet['focus']['index_ref'],packet['focus']['delta_ref'],*packet['consumer_refs']]
+        elif candidates := packet.get('prior_review_candidates'):
+            packet['evidence_refs'] += [ref for candidate in candidates for ref in (candidate['submission_ref'],candidate['opinion_ref'])]
         else:
-            from review_facts import collect
+            from scientific_review.facts import collect
             try:
                 facts = collect(root, request, packet, runtime.now())
                 if facts:
@@ -178,7 +212,7 @@ def _register_review_packet(root, worker, request, packet, ident):
         ref = _save_fixed(root, path, (tasks._json(packet) + '\n').encode())
     return tasks.mutate(root, 'request', worker.actor, {
         'id': ident, 'task_id': request['task_id'], 'kind': 'review', 'recipient_role': 'executor',
-        'input_ref': ref, 'summary': packet['review_scope'], 'plan_revision': request['plan_revision'],
+        'input_ref': ref, 'summary': packet['review_scope'][:240], 'plan_revision': request['plan_revision'],
         'required_scope': request['required_scope'], 'independent': True, 'parent_request_id': request['id'],
         'delivery_contract':{'purpose':packet['review_scope'],'endpoint':'evidence',
             'scope_boundary':{'in_scope':'Read the frozen exact candidates and original author purpose/question.',
@@ -187,12 +221,14 @@ def _register_review_packet(root, worker, request, packet, ident):
             'authority_refs':[],'interfaces':{'text':'Return the original opinion directly to the author.','refs':[]}}})
 
 
-def _program_turn(root, worker, parent, request, config, *, previous=None, technical_recovery=None):
+def _program_turn(root, worker, parent, request, config, *, previous=None, technical_recovery=None, writer_replacement=None):
     role = 'scientific_reviewer' if request['independent'] else request['recipient_role']
     context = {'parent_brief_ref': parent['input_ref']} if request['independent'] else {}
     if technical_recovery:
         context['technical_recovery'] = technical_recovery
         context['prior_receipt_ref'] = previous['latest_receipt']
+    if writer_replacement:
+        context['writer_replacement']=writer_replacement
     run_id = _program_run_id(request,config,previous['id'] if previous else None)
 
     input_ref = technical_recovery['ref'] if technical_recovery else request['input_ref']
@@ -202,13 +238,29 @@ def _program_turn(root, worker, parent, request, config, *, previous=None, techn
         evidence_home=str(program_home(parent, root=root)), operation='resume' if previous else 'start',
         previous_run_id=previous['id'] if previous else None,
         program_context=context if config.get('programmatic') else None)
-    if config['host']['adapter']=='dsh-headless' and isinstance(result,dict) and result.get('outcome')=='failed':
-        from dsh_capacity import is_pilot_provider
-        if is_pilot_provider(root,config['provider'].get('dsh_provider')):
-            recovery = _automatic_continuation(root,worker,parent,request,config,run_id,
-                                               nested=bool((technical_recovery or {}).get('automatic')))
-            if recovery:
-                result['automatic_continuation'] = recovery
+    return _after_program_turn(root, worker, parent, request, config, run_id, result)
+
+
+def _after_program_turn(root, worker, parent, request, config, run_id, result):
+    if config['host']['adapter'] == 'dsh-headless' and isinstance(result, dict):
+        from dsh_capacity import recovery_enabled, recovery_managed
+        provider = config['provider'].get('dsh_provider')
+        recovery = None
+        if result.get('outcome') in ('failed', 'unknown') and recovery_enabled(root, provider):
+            if (result['outcome'] == 'unknown' and result.get('native_identity')
+                    and (result.get('transport_diagnostic') or {}).get('source') != 'original_model_watchdog'):
+                original = tasks.read_run(root, run_id)
+                observed = _program_read(root, worker, request, original)
+                if observed.get('outcome') in TERMINAL:
+                    result = observed
+            if result.get('outcome') in ('failed', 'unknown'):
+                recovery = _automatic_continuation(root,worker,parent,request,config,run_id,
+                                                   delivery_effects=result.get('delivery_effects'))
+                if recovery:
+                    result['automatic_continuation'] = recovery
+        if recovery_managed(root, provider):
+            from dsh_recovery_host import record_result
+            record_result(root, worker.actor, tasks.read_run(root, run_id), recovery)
     return result
 
 
@@ -216,28 +268,44 @@ def _program_run_id(request,config,previous):
     return 'program:' + runtime.digest(tasks._json([request['id'],config['config_ref'],previous]).encode())[:32]
 
 
-def _automatic_continuation(root, worker, parent, request, config, run_id, *, nested):
+def _automatic_continuation(root, worker, parent, request, config, run_id, *, recover_claim=False, delivery_effects=None):
     from dsh_auto_resume import consider, finish
-    from execution_lease import ExecutionBusy
+    from execution_lease import ExecutionBusy, FileLock
     original = tasks.read_run(root,run_id)
     claim = None
     try:
-        child = None if nested else _program_run_id(request,config,run_id)
-        claim = consider(root,worker.actor,request,original,config,child)
-        if not claim or claim['state'] != 'claimed':
-            return claim
-        receipt = original['latest_receipt']
-        instruction = ('Continue the existing active Goal in this original Session within its remaining budget. '
-                       'Read get_goal and the previous terminal receipt. Retain and use prior results and review IDs. '
-                       'Check uncertain effects through their original read-only recovery entry. Do not resend an earlier '
-                       'write or request a duplicate independent review. Advance only the next authorized unfinished action.\n'
-                       'Previous terminal receipt: '+receipt['path']+'\n')
-        ref = _save_fixed(root, Path(receipt['path']).parent/'automatic-continuation.md', instruction.encode())
-        result = _program_turn(root,worker,parent,request,config,previous=original,
-            technical_recovery={'ref':ref,'evidence_refs':[receipt],'automatic':True})
-        return {'state':'attempted','run_id':child,'outcome':result.get('outcome'),'receipt':result.get('receipt'),
-                'probe':claim['probe']}
-    except (ExecutionBusy, OSError, ValueError, KeyError, TypeError, sqlite3.Error, runtime.CapabilityUnavailable) as exc:
+        with FileLock(root, ['dsh-recovery', run_id]):
+            child = _program_run_id(request,config,run_id)
+            claim = consider(root,worker.actor,request,original,config,child,recover_claim=recover_claim,
+                             delivery_effects=delivery_effects)
+            if not claim or claim['state'] != 'claimed':
+                return claim
+            receipt = original['latest_receipt']
+            evidence_refs=[receipt]
+            instruction = ('Continue the original independent review of the same frozen input. '
+                           'Complete the opinion for the existing review request.' if request['independent'] else
+                           'Continue the original active Goal within its remaining budget. '
+                           'Use prior results and review IDs. Advance only the next authorized unfinished action.')
+            instruction += '\nOriginal receipt: ' + receipt['path'] + '\n'
+            if not request['independent']:
+                from delivery_evidence import read_handoff_effects
+                effects=delivery_effects or read_handoff_effects(root,request,run=original)
+                if effects and effects.get('state')!='original_effect_evidence_unavailable':
+                    raw=(tasks._json(effects)+'\n').encode()
+                    proof=_save_fixed(root,Path(receipt['path']).parent/('delivery-effects-'+runtime.digest(raw)+'.json'),raw)
+                    evidence_refs.append(proof)
+                    instruction += ('\nRead the exact existing write/readback evidence and candidate-only members before choosing the next action: '
+                                    +proof['path']+'\nUse the original attempt for uncertain effects. Preserve the author’s scientific part of the delivery.\n')
+            instruction_raw=instruction.encode()
+            ref = _save_fixed(root,Path(receipt['path']).parent/('automatic-continuation-'+runtime.digest(instruction_raw)+'.md'),instruction_raw)
+            result = _program_turn(root,worker,parent,request,config,previous=original,
+                technical_recovery={'ref':ref,'evidence_refs':evidence_refs,'automatic':True,'probe':claim['probe']})
+            return {'state':'attempted','run_id':child,'outcome':result.get('outcome'),'receipt':result.get('receipt'),
+                    'probe':claim['probe']}
+    except ExecutionBusy:
+        return {'state':'already_processing','run_id':run_id}
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, runtime.CapabilityUnavailable,
+            tasks.WorkConflict) as exc:
         return {'state':'withheld_or_recover_original','reason':safe_diagnostic(exc),
                 **({'run_id':claim['next_run_id']} if claim and claim['state']=='claimed' else {})}
     finally:
@@ -258,7 +326,12 @@ def _program_read(root, worker, request, run, *, stop=None, config_path=None):
     if stop:
         return worker.stop(**options, reason=stop)
     try:
-        return worker.readresult(**options)
+        result = worker.readresult(**options)
+        if run.get('target_host') == 'deepseek_harness' and result.get('outcome') in ('failed', 'unknown'):
+            from dsh_auto_resume import recovery_view
+            if recovery := recovery_view(tasks.read_run(root, run['id'])):
+                result['automatic_continuation'] = recovery
+        return result
     except runtime.CapabilityUnavailable as exc:
         return {'run_id': run['id'], 'outcome': run['outcome'], 'receipt': run['latest_receipt'],
                 'replay_allowed': False, 'reason': safe_diagnostic(exc)}
@@ -276,39 +349,55 @@ def _program_opinion(root, worker, parent, run):
         except (OSError,sqlite3.Error):
             pass  # The exact native opinion remains readable if indexing fails.
     result = _program_result(root, run)
-    report = result.get('result')
-    if not isinstance(report, str):
-        return None
     review = tasks.read_request(root, run['request_id'])
-    try:
-        packet = _review_packet(root, review['input_ref'])
-    except ValueError:
-        packet = {'brief_ref': review['input_ref']}
-    if not isinstance(packet, dict):
-        packet = {'brief_ref': review['input_ref']}
-    returned = tasks.read_return(root, run['return_ids'][0]) if run['return_ids'] else None
-    source = returned['result_ref'] if returned else run['latest_receipt']
-    return {'return_id': returned['id'] if returned else None, 'ref': source,
-            'submission_ref': review['input_ref'], 'opinion': {'text': report, 'submission': packet}}
+    from scientific_review.rounds import opinion_view
+    with contextlib.closing(tasks._connect(root,True)) as connection:
+        return opinion_view(connection, root, review, run_id=run['id'],
+                            native_text=result.get('result'), source=run['latest_receipt'])
+
+
+def _direct_return_id(root, request_id):
+    with contextlib.closing(tasks._connect(root, True)) as c:
+        row = c.execute('''SELECT id FROM work_returns WHERE request_id=? AND run_id IS NULL
+                        ORDER BY created_at DESC,id DESC LIMIT 1''', (request_id,)).fetchone()
+    return row['id'] if row else None
+
+
+def _program_result_view(root, worker, request, run, direct_id, *, config_path=None):
+    result = {'request_id': request['id']}
+    direct = worker._registered_delivery(direct_id) if direct_id else None
+    if run:
+        result.update(_program_read(root, worker, request, run, config_path=config_path))
+        if direct:
+            result['request_delivery'] = direct
+    elif direct:
+        result.update(state='returned', management_return=direct)
+        if request['independent']:
+            from scientific_review.rounds import opinion_view
+            with contextlib.closing(tasks._connect(root,True)) as connection:
+                result['original_opinion'] = opinion_view(connection, root, request, return_id=direct_id)
+    else:
+        result['state'] = 'not_started'
+    return result
 
 
 def _drive_program(root, worker, request, config):
     run = _selected_run(root, request['id'])
-    # A directly saved report remains usable even when an earlier host launch
-    # failed before opening a Session. Observation never replaces that report.
-    with contextlib.closing(tasks._connect(root, True)) as c:
-        returned = c.execute('SELECT id,run_id FROM work_returns WHERE request_id=? ORDER BY created_at DESC,id DESC LIMIT 1',
-                             (request['id'],)).fetchone()
-    if returned and not returned['run_id']:
-        return {'request_id': request['id'], 'state': 'returned',
-                'management_return': worker._registered_delivery(returned['id']), 'original_run': run}
-    if run:
-        return {'request_id': request['id'], **_program_read(root, worker, request, run)}
-    from harness_package import predecessor
-    return _program_turn(root, worker, request, request, config, previous=predecessor(root, request))
+    direct_id = _direct_return_id(root, request['id'])
+    if run or direct_id:
+        return _program_result_view(root, worker, request, run, direct_id)
+    from harness_package import missing_devin_writer, predecessor
+    previous=predecessor(root,request)
+    replacement=None
+    if previous and previous['target_host']=='devin_cli':
+        with contextlib.closing(tasks._connect(root,True)) as c:
+            replacement=missing_devin_writer(c,root,request,previous['request_id'])
+    return _program_turn(root,worker,request,request,config,previous=None if replacement else previous,
+                         writer_replacement=replacement)
 
 
-def _continue_session(root, worker, request, config, path=None, *, exact_run_id=None, resume_stopped=False):
+def _continue_session(root, worker, request, config, path=None, *, exact_run_id=None, resume_stopped=False,
+                      goal_max_rounds=None, basis=None):
     """Continue the exact terminal Session from an ordinary owner instruction file."""
     ref = harness_sessions.reference(root, path) if path else request['input_ref']
     if not Path(ref['path']).read_text(encoding='utf-8').strip():
@@ -324,14 +413,32 @@ def _continue_session(root, worker, request, config, path=None, *, exact_run_id=
     # after a lost transport. It does not replay or settle unknown data effects.
     unknown_session = bool(original and original['outcome'] == 'unknown'
                            and supports(original['target_host'], 'interrupted_resume'))
+    selected = tasks.read_request(root, original['request_id'])
     if original and path:
         with contextlib.closing(tasks._connect(root, True)) as c:
             children = {row[0] for row in c.execute("SELECT run_id FROM work_run_events WHERE kind='intent' AND json_extract(payload_json,'$.previous_run_id')=?", (original['id'],))}
-        if any(r['id'] in children and any(item['sha256'] == ref['sha256'] for item in r['input_refs']) and not worker.confirmed_start_rejection(r) for r in runs):
-            return
+        duplicate = next((r for r in reversed(runs) if r['id'] in children
+                          and any(item['sha256'] == ref['sha256'] for item in r['input_refs'])
+                          and not worker.confirmed_start_rejection(r)), None)
+        if duplicate:
+            if goal_max_rounds is not None:
+                from harness_package import launch_spec
+                budget=launch_spec(root,duplicate).get('goal_budget') or {}
+                if budget.get('max_rounds')!=goal_max_rounds:
+                    raise ValueError('This original instruction already has a different continuation. Read its exact result.')
+            return selected, {'run_id': duplicate['id']}
     if not original or original['outcome'] not in TERMINAL and not unknown_session:
         raise ValueError('Observe the original running or unknown attempt before continuing it.')
-    selected = tasks.read_request(root, original['request_id'])
+    basis_ref=None
+    if path:
+        from harness_scope import continuation
+        with contextlib.closing(tasks._connect(root,True)) as c:
+            original_task=tasks._row(c,'work_tasks',selected['task_id'])
+            tasks._admit_request(c,original_task,tasks._row(c,'work_requests',selected['id']))
+            resolution=continuation(c,root,selected,basis)
+        if resolution and not basis:
+            return selected,resolution
+        basis_ref=resolution
     latest = _selected_run(root, selected['id'])
     if latest['id'] != original['id']:
         raise ValueError('Continue the latest original Session attempt, not an earlier turn.')
@@ -371,14 +478,39 @@ def _continue_session(root, worker, request, config, path=None, *, exact_run_id=
         raise ValueError('Explicit stop recovery needs the original owner instruction; ordinary --continue does not resume stops.')
     if resume_stopped:
         tasks.resume_delegation(root, worker.actor, selected['id'], ref)
-    _program_turn(root, worker, request, selected, config, previous=original,
-        technical_recovery={'ref': ref, 'evidence_refs': [original['latest_receipt']] if original['latest_receipt'] else [],
-                            **({'resume_stopped_run':original['id']} if stopped else {})})
+    goal_budget=None
+    if goal_max_rounds is not None:
+        from dsh_headless import query_session
+        from harness_scope import _owner
+        with contextlib.closing(tasks._connect(root,True)) as c:
+            _owner(c,tasks._row(c,'work_tasks',selected['task_id']),worker.actor)
+        native=original['native_identity'] or {}
+        if (config['host']['adapter']!='dsh-headless' or selected['independent'] or selected['recipient_role']!='executor'
+                or native.get('host')!='deepseek_harness' or not native.get('turn_id')):
+            raise ValueError('Apply the new total to the exact original DSH author Session.')
+        persisted=query_session(config['host'],native,root)
+        if (persisted.get('session_id')!=native['id'] or str(persisted.get('latest_turn'))!=native['turn_id']
+                or not isinstance(persisted.get('native_goal'),dict)):
+            raise ValueError('Read the exact current Goal and native turn before applying its owner-approved budget.')
+        goal=persisted['native_goal']
+        ceiling=goal.get('maxGoalRounds')
+        if (not goal.get('id') or type(goal.get('revision')) is not int or goal.get('phase')!='blocked'
+                or (goal.get('blockedReason') or {}).get('code')!='round-limit'
+                or type(ceiling) is not int or goal.get('roundsStarted')!=ceiling or goal_max_rounds<=ceiling):
+            raise ValueError('Apply an increased total only to the exact exhausted author Goal with its retained native revision.')
+        goal_budget={'original_run_id':original['id'],'session_id':native['id'],'id':goal['id'],
+                     'revision':goal['revision'],'previous_max':ceiling,'max_rounds':goal_max_rounds}
+    attempt = _program_turn(root, worker, request, selected, config, previous=original,
+        technical_recovery={'ref': ref, 'evidence_refs': [item for item in (original['latest_receipt'],basis_ref) if item],
+                            **({'ordinary_continuation':{'basis':basis}} if path else {}),
+                            **({'resume_stopped_run':original['id']} if stopped else {}),
+                            **({'goal_budget':goal_budget} if goal_budget else {})})
+    return selected, attempt
 
 
 def programmatic(root, request_id, *, config_path=None, status=False, read_result=False, stop=None,
                  exact_run_id=None, route=None, runtime_factory=None, instructions_path=None, resume_stopped=False,
-                 continue_original=False):
+                 continue_original=False, goal_max_rounds=None, basis=None):
     """Execute or observe one original native invocation; Goal owns its work."""
     root = Path(root).resolve(strict=True)
     if instructions_path and continue_original:
@@ -387,6 +519,11 @@ def programmatic(root, request_id, *, config_path=None, status=False, read_resul
         raise ValueError('Continuation starts a native turn; use a separate observation or stop action.')
     if resume_stopped and not instructions_path:
         raise ValueError('Explicit stop recovery needs its original owner instruction.')
+    if basis and not instructions_path:
+        raise ValueError('--basis accompanies the original --instructions.')
+    if goal_max_rounds is not None and (type(goal_max_rounds) is not int or not 0<goal_max_rounds<=2**53-1
+            or not instructions_path or not exact_run_id or resume_stopped):
+        raise ValueError('An explicit Goal total requires --instructions and the exact --run-id for an unstopped author.')
     request = tasks.read_request(root, request_id)
     if request['kind'] not in ('plan', 'review', 'finding'):
         raise ValueError('Select an explicit work or review assignment.')
@@ -394,18 +531,26 @@ def programmatic(root, request_id, *, config_path=None, status=False, read_resul
     if status:
         return {'request_id': request_id, 'transport': 'programmatic', 'metering': _program_metering(root, request), 'runs': runs}
     worker = (runtime_factory or runtime.Runtime)(root)
+    latest = next((r for r in reversed(runs) if r['request_id'] == request_id), None)
+    exact = next((r for r in runs if r['id'] == exact_run_id), None) if exact_run_id else None
+    if exact_run_id and not exact and not (instructions_path or continue_original):
+        raise ValueError('Recover an exact original package or dependent review run.')
     if read_result or stop:
-        run = next((r for r in reversed(runs) if not exact_run_id or r['id'] == exact_run_id), None)
-        if exact_run_id and not run:
-            raise ValueError('Recover an exact original package or dependent review run.')
-        selected = tasks.read_request(root, run['request_id']) if run else request
-        return _program_read(root, worker, selected, run, stop=stop, config_path=config_path)
+        run = exact or (runs[-1] if stop and runs else latest)
+        selected = tasks.read_request(root, run['request_id']) if run and run['request_id'] != request_id else request
+        if stop:
+            return _program_read(root, worker, selected, run, stop=stop, config_path=config_path)
+        return _program_result_view(root, worker, selected, run, _direct_return_id(root, selected['id']), config_path=config_path)
     if continue_original and not exact_run_id:
         raise ValueError('--continue requires the original --run-id.')
-    if runs and not instructions_path and not continue_original:
-        return _drive_program(root, worker, request, None)
+    if not instructions_path and not continue_original:
+        latest = exact or latest
+        selected = tasks.read_request(root, latest['request_id']) if latest and latest['request_id'] != request_id else request
+        direct_id = _direct_return_id(root, selected['id'])
+        if latest or direct_id:
+            return _program_result_view(root, worker, selected, latest, direct_id, config_path=config_path)
     if continue_original:
-        original = next((r for r in runs if r['id'] == exact_run_id), None)
+        original = exact
         if original and original['target_host'] == 'deepseek_harness' and original['outcome'] == 'intent':
             from dsh_capacity_handoff import recover_abandoned
             recovered = recover_abandoned(root, worker, original, config_path=config_path, route=route)
@@ -427,13 +572,22 @@ def programmatic(root, request_id, *, config_path=None, status=False, read_resul
     # An outer process may still carry independent reviews after its author ends.
     home = production_review.scientific_path(root, program_home(request, root=root), must_exist=False)
     (home / 'work').mkdir(parents=True, exist_ok=True)
+    selected = tasks.read_request(root, exact['request_id']) if exact and exact['request_id'] != request_id else request
     try:
         if instructions_path or continue_original:
-            _continue_session(root, worker, request, config, instructions_path,
-                              exact_run_id=exact_run_id, resume_stopped=resume_stopped)
+            selected, attempt = _continue_session(root, worker, request, config, instructions_path,
+                                                   exact_run_id=exact_run_id, resume_stopped=resume_stopped,
+                                                   goal_max_rounds=goal_max_rounds,basis=basis)
+            if attempt.get('state')=='original_delivered':
+                return attempt
+            run = tasks.read_run(root, attempt['run_id'])
+            view = _program_result_view(root, worker, selected, run, _direct_return_id(root, selected['id']))
+            if recovery := attempt.get('automatic_continuation'):
+                view['automatic_continuation'] = recovery
+            return view
         return _drive_program(root, worker, request, config)
     except (runtime.CapabilityUnavailable, production_review.ReviewCapabilityUnavailable) as exc:
-        latest = next(iter(reversed(_program_runs(root, request))), None)
+        latest = _selected_run(root, selected['id'])
         if latest:
             return {'request_id': request_id, 'outcome': latest['outcome'], 'run_id': latest['id'], 'diagnostic': safe_diagnostic(exc)}
         return {'request_id': request_id, 'state': 'host_unavailable', 'phase': 'host',
@@ -459,13 +613,16 @@ def main(argv=None):
     actions.add_argument('--instructions', help='Original owner instruction to continue the same terminal Session.')
     actions.add_argument('--continue', dest='continue_original', action='store_true', help='Technical continuation of --run-id in its original Session, brief and Goal.')
     parser.add_argument('--resume-stopped', action='store_true', help='Explicitly continue an ended assignment or stopped Session with --instructions')
+    parser.add_argument('--basis',help='Original independent review return or revise decision for an already delivered unit')
+    parser.add_argument('--goal-max-rounds',type=int,help='Owner-approved total for the exact exhausted DSH Goal')
     args = parser.parse_args(argv)
     try:
         if args.stop is not None and not args.stop.strip():
             raise ValueError('Provide the reason for stopping the original run.')
         result = programmatic(args.root, args.request, config_path=args.config, status=args.status,
             read_result=args.read_result, stop=args.stop, exact_run_id=args.run_id, route=args.route,
-            instructions_path=args.instructions, resume_stopped=args.resume_stopped, continue_original=args.continue_original)
+            instructions_path=args.instructions, resume_stopped=args.resume_stopped, continue_original=args.continue_original,
+            goal_max_rounds=args.goal_max_rounds,basis=args.basis)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (ValueError, OSError, entry.ProductionError) as exc:

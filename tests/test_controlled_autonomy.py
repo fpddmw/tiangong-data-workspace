@@ -60,6 +60,56 @@ class AcceptanceTests(unittest.TestCase):
         if checks:args+=['--checks',str(checks)]
         return self.cli(*args)
     def completion(self,note):return self.cli('work-complete','--task','task','--note',note)
+
+    def test_prepared_adoption_compares_only_relevant_decisions_and_file_versions(self):
+        self.configure(2)
+        returned=self.returned(coverage=['P0'])
+        self.request('independent-package',scope=['P1'])
+        prepare=s.prepare_decision
+        def unrelated_progress(*args):
+            prepared=prepare(*args)
+            self.returned('parallel-result','independent-package',coverage=['P1'])
+            return prepared
+        with patch.object(s,'prepare_decision',side_effect=unrelated_progress):
+            accepted=self.dispose(scope=['P0'],acceptance='final')
+        self.assertEqual(accepted['scope'],['P0'])
+        self.assertEqual(self.dispose(scope=['P0'],acceptance='final')['id'],accepted['id'])
+
+        def change_source(*args):
+            prepared=prepare(*args)
+            Path(returned['result_ref']['path']).write_text('Changed original after the read snapshot')
+            return prepared
+        with patch.object(s,'prepare_decision',side_effect=change_source):
+            with self.assertRaisesRegex(t.WorkConflict,'Relevant original evidence'):
+                self.dispose('second',scope=['P0'],acceptance='final')
+        self.assertEqual(len(t.read_task(self.root,'task')['dispositions']),1)
+
+    def test_prepared_adoption_rechecks_parallel_competition_and_task_stop(self):
+        for change in ('competing_decision','stop'):
+            if change=='stop':
+                self.tearDown();self.setUp()
+            self.configure(1)
+            self.returned(coverage=['P0'])
+            other=self.returned('other-return',coverage=['P0'])
+            prepare=s.prepare_decision
+            def interrupt(*args):
+                prepared=prepare(*args)
+                if change=='competing_decision':
+                    self.dispose('chosen-use',returned=other['id'],scope=['P0'])
+                else:
+                    snapshot=t.read_task(self.root,'task')['task']
+                    self.call(self.lead,'pause',{'id':'hold-task','task_id':'task',
+                        'expected_task_revision':snapshot['revision'],'summary':'Stop the original task',
+                        'evidence_ref':self.evidence})
+                return prepared
+            with self.subTest(change=change),patch.object(s,'prepare_decision',side_effect=interrupt):
+                with self.assertRaisesRegex(t.WorkConflict,'Relevant original evidence'):
+                    self.dispose(scope=['P0'],acceptance='final')
+            snapshot=t.read_task(self.root,'task')
+            self.assertEqual(len(snapshot['dispositions']),int(change=='competing_decision'))
+            if change=='stop':
+                self.assertEqual(snapshot['task']['state'],'paused')
+
     def test_pending_retry_partial_delivery_concurrent_completion_and_reopen(self):
         ids=self.configure();note=self.save('same-completion-note',{'reason':'Complete the original agreed scope'})['path']
         first=self.completion(note);again=self.completion(note)
@@ -102,18 +152,60 @@ class AcceptanceTests(unittest.TestCase):
         self.configure(1)
         with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),t.transaction(self.root) as c:s.set_contract(c,self.root,'request','request',{'purpose':'Draft'},self.brief,self.lead)
         check=self.cli('work-check','--request','request','--for','dispatch')
-        self.assertFalse(check['ready']);self.assertTrue(any('scope_boundary' in m['id'] for m in check['missing']))
+        self.assertFalse(check['ready']);self.assertTrue(any(m['id'].endswith('.contract.endpoint') for m in check['missing']))
         report=self.save('partial-failure',{'error':'External source unavailable; useful local evidence retained'})['path']
         returned=self.cli('work-return','--request','request','--result',report,'--scope','P0',actor='worker')
         self.assertEqual(returned['coverage'],['P0'])
         with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),t.transaction(self.root) as c:s.set_contract(c,self.root,'request','request',self.agreement('evidence',[self.brief]),self.brief,self.lead)
         self.assertTrue(self.cli('work-check','--request','request','--for','dispatch')['ready'])
-    def candidate_delivery(self,endpoint,body=None,native_report=None):
+
+    def test_public_subdelegation_only_overrides_child_endpoint_and_keeps_frozen_parent(self):
+        self.configure(2,'submitted')
+        brief=self.root/'narrow-brief.md'
+        brief.write_text('Create the first draft and retain the original qualifications.\n')
+        delta=self.save('draft-only',{'endpoint':'saved_draft'})
+        created=self.cli('work-request','--task','task','--brief',str(brief),'--scope','P0','--contract',delta['path'])
+        check=self.cli('work-check','--request',created['id'],'--for','dispatch')
+        self.assertTrue(check['ready'],check['missing'])
+        terms=check['effective_delegations'][created['id']]
+        self.assertEqual(terms['body']['endpoint'],'saved_draft')
+        self.assertIn('No unrelated',terms['body']['scope_boundary']['out_of_scope'])
+        self.assertEqual(terms['body']['authority_refs'],[self.evidence])
+        self.assertEqual(self.cli('work-contract','--request',created['id'])['effective'],terms)
+        with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),t.transaction(self.root) as c:
+            s.set_contract(c,self.root,'task','task',{'purpose':'A later, broader use','endpoint':'published'},self.brief,self.lead)
+        self.assertEqual(self.cli('work-contract','--request',created['id'])['effective'],terms)
+        outside=self.cli('work-request','--task','task','--brief',str(brief),'--scope','outside','--contract',delta['path'])
+        self.assertNotEqual(outside['id'],created['id'])
+        denied=self.cli('work-check','--request',outside['id'],'--for','dispatch')
+        self.assertFalse(denied['ready'])
+        self.assertTrue(any(row['id'].endswith('.scope') for row in denied['missing']))
+
+    def test_ordinary_author_report_can_be_final_adopted_by_exact_lead_scope(self):
+        self.configure(2)
+        report=self.root/'plain-scope.md'
+        report.write_text('P0 的原测量清单已经交付，P1 的年度分母仍待提供。\n')
+        adopted_note=self.root/'use.md'
+        adopted_note.write_text('采用原 P0 测量证据；P1 仍未完成。\n')
+        returned=self.cli('work-return','--request','request','--result',str(report),actor='worker')
+        self.assertEqual(returned['coverage'],[])
+        action=['work-dispose','--return-id',returned['id'],'--decision',str(adopted_note),'--use','adopt','--acceptance','final']
+        self.assertEqual(self.cli(*action,'--scope','P2',check=False)['code'],'coverage_required')
+        self.cli(*action,'--scope','P0')
+        progress=self.cli('work-show','--id','request')['request_progress']['request']
+        self.assertEqual(progress['remaining_scope'],['P1'])
+        self.assertEqual(self.cli('work-scope','--task','task')['remaining_scope'],['P1'])
+        self.assertEqual(t.read_return(self.root,returned['id'])['coverage'],[])
+        self.cli('work-pause','--task','task','--note',str(adopted_note))
+        self.assertEqual(self.cli(*action,'--scope','P1',check=False)['code'],'original_stopped')
+    def candidate_delivery(self,endpoint,body=None,native_report=None,*,index_opinion=True,public_workflow=False):
         self.configure(1,endpoint)
         body=body or {'processDataSet':{'processInformation':{'dataSetInformation':{'common:UUID':'synthetic-object'}},
             'administrativeInformation':{'publicationAndOwnership':{'common:dataSetVersion':'01.00.000'}},
             'exchanges':{'exchange':[{'@dataSetInternalID':'0','meanAmount':'1','resultingAmount':'1'}]}}}
-        candidate=self.save('candidate',body);artifact={'id':'candidate','version':'01.00.000',**candidate}
+        from delivery_evidence import body_identity,content_digest
+        kind,object_id,version=body_identity(body)
+        candidate=self.save('candidate',body);artifact={'id':'candidate','version':version,**candidate}
         native=self.save('native-validation',native_report or {'status':'completed','completeness':{'truncated':False,'hasMore':False}})
         gate=self.save('gate-report',{'schema':'data-workspace.lca-gate.v4','inputs':{candidate['path']:candidate['sha256']},'outcome':'warning',
             'checks':[{'status':'passed','native_report':Path(native['path']).name,'native_report_sha256':native['sha256']}],
@@ -122,17 +214,29 @@ class AcceptanceTests(unittest.TestCase):
             'artifact_refs':[artifact],'evidence_refs':[self.brief]})
         self.call(self.lead,'request',{'id':'review','task_id':'task','kind':'review','recipient_role':'executor','recipient':self.reviewer,
             'input_ref':packet,'summary':'Independent scientific use assessment','plan_revision':1,'required_scope':['P0'],'independent':True,'parent_request_id':'request'})
-        opinion=self.save('opinion',{'conclusion':'supported_with_limits','limits':'A local synthetic fixture only; not scientific production'})
-        self.call(self.reviewer,'return',{'id':'opinion','request_id':'review','result_ref':opinion,'summary':'Supported with stated limits','artifact_refs':[],'coverage':['P0'],'remaining_scope':[]})
-        self.cli('work-review-record','--return-id','opinion','--conclusion','supported_with_limits','--basis',opinion['path'])
+        if index_opinion:
+            opinion=self.save('opinion',{'conclusion':'supported_with_limits','limits':'A local synthetic fixture only; not scientific production'})
+        else:
+            from task_ledger.sessions import reference
+            plain=self.root/'opinion.md'
+            plain.write_text('我核对了原换算。干基数量可以复算，请在候选说明里明确这个用法及边界。\n',encoding='utf-8')
+            opinion=reference(self.root,plain)
+        if public_workflow:
+            original_opinion=self.cli('work-return','--request','review','--result',opinion['path'],actor='reviewer')
+        else:
+            original_opinion=self.call(self.reviewer,'return',{'id':'opinion','request_id':'review','result_ref':opinion,
+                'summary':'Supported with stated limits','artifact_refs':[],'coverage':['P0'],'remaining_scope':[]})
+        if index_opinion:
+            self.cli('work-review-record','--return-id',original_opinion['id'],'--conclusion','supported_with_limits','--basis',opinion['path'])
         receipts=[]
         if endpoint in ('saved_draft','submitted','published'):
-            context={'actor':{'id':'synthetic-owner'},'environment':'https://example.invalid','requestId':'synthetic-request',
+            context={'actor':{'id':'account' if public_workflow else 'synthetic-owner'},
+                'environment':'https://isolated.invalid' if public_workflow else 'https://example.invalid','requestId':'synthetic-request',
                 'observation':{'source':'remote','time':'2026-01-01T12:00:01Z'}}
-            subject={'type':'process','id':'synthetic-object','version':'01.00.000','stateCode':100 if endpoint=='published' else 20 if endpoint=='submitted' else 0,
+            subject={'type':kind,'id':object_id,'version':version,'stateCode':100 if endpoint=='published' else 20 if endpoint=='submitted' else 0,
                 'modifiedAt':'2026-01-01T12:00:00Z'}
             receipts.append(self.save('native-save',{'schemaVersion':1,'operation':'dataset process create','status':'completed','outcome':'dataset_created','error':None,
-                'context':context,'data':{'subject':subject,'contentDigest':__import__('delivery_evidence').content_digest(body)}}))
+                'context':context,'data':{'subject':subject,'contentDigest':content_digest(body)}}))
             receipts.append(self.save('native-readback',{'schemaVersion':1,'operation':'dataset process get','status':'completed','outcome':'dataset_read',
                 'context':context,'data':{'subject':subject,'content':body},'completeness':{'returned':1,'truncated':False,'hasMore':False,'completeContent':True}}))
             if endpoint in ('submitted','published'):
@@ -142,10 +246,63 @@ class AcceptanceTests(unittest.TestCase):
         refs=[self.brief,gate,*receipts]
         with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),t.transaction(self.root) as c:
             s.set_contract(c,self.root,'request','request',self.agreement(endpoint,refs),self.brief,self.lead)
+        if public_workflow:
+            return candidate,original_opinion
         final=self.save('author-handling',{'response':'Read original independent limits, checked current candidate and retained exact intended use'})
         self.call(self.worker,'return',{'id':'return','request_id':'request','result_ref':final,'summary':'Original final with author handling',
             'artifact_refs':[artifact,{'id':'gate','version':'v1',**gate}],'coverage':['P0'],'remaining_scope':[]})
         return candidate,receipts
+
+    def test_public_return_and_final_adoption_carry_through_native_review_and_next_owner(self):
+        import harness
+        from platform_review import submission as batch
+        from delivery_evidence import body_identity
+        from review_fixtures import process
+        from test_wave_delivery import LocalReviewReceiver
+
+        body=process()
+        candidate,opinion=self.candidate_delivery('saved_draft',body,index_opinion=False,public_workflow=True)
+        with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),t.transaction(self.root) as c:
+            s.set_contract(c,self.root,'task','task',self.agreement('submitted'),self.brief,self.lead)
+        report=self.root/'author-result.md'
+        report.write_text('P0 uses the verified dry-mass conversion. I retained this use and the original moisture limits.\n')
+        returned=self.cli('work-return','--request','request','--result',str(report),'--candidate',candidate['path'],actor='worker')
+        self.assertEqual(returned['coverage'],[])
+        use=self.root/'adoption.md'
+        use.write_text('Adopt P0 for the bounded dry-product comparison, using the reviewed conversion and stated limits.\n')
+        adopted=self.cli('work-dispose','--return-id',returned['id'],'--use','adopt','--acceptance','final','--scope','P0',
+                         '--decision',str(use),'--apply-review',opinion['id'],'--handling',str(report))
+        self.assertEqual(s.read_scope(self.root,'task')['remaining_count'],1)
+        target=body_identity(body)
+        native=self.save('native-review-request',{'requestId':'final-p0','expectedActor':'account',
+            'expectedEnvironment':'https://isolated.invalid','targets':[dict(zip(('type','id','version'),target))],'includeRelated':True})
+        authorize=self.save('permission-for-root',{'id':'authorize-p0','scope':{'task':'task','object':'/'.join(target),'action':'submit',
+            'account':'account','project':'project'},'subject':batch.SUBMISSION,'statement':'allow',
+            'source_ref':{'path':self.evidence['path'],'sha256':self.evidence['sha256'],'locator':'file','decided_by':'lead'},
+            'details':{'operator':self.lead,'authorized_related':[]}})
+        self.cli('work-decision-record','--decision',authorize['path'])
+        selection={'adoption':adopted['id'],'request':native['path']}
+        batch_input=self.save('selected-roots',{'roots':[selection]})['path']
+        driver=LocalReviewReceiver(self,[body],missing='final-p0')
+        def submit(*args):
+            with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),patch.object(batch,'NativeReview',return_value=driver),patch('builtins.print') as output:
+                harness.main(['--root',str(self.root),'work-submit-batch','--task','task',*args])
+            return json.loads(output.call_args.args[0])['roots'][0]
+
+        direct=submit('--adoption',adopted['id'],'--request',native['path'])
+        self.assertEqual(direct,submit('--input',batch_input))
+        self.assertEqual(direct['state'],'ready')
+        self.assertEqual(submit('--input',batch_input,'--execute')['state'],'unknown')
+        self.assertEqual(self.cli('work-show','--id','request')['review_submissions'][0]['state'],'unknown')
+        completed=submit('--input',batch_input,'--execute')
+        self.assertEqual(completed['state'],'accepted')
+        self.assertEqual(driver.sent,['final-p0'])
+        platform_handoff=self.cli('work-show','--id','request')['review_submissions'][0]['handoff']
+        self.assertEqual(platform_handoff,completed['handoff'])
+        self.assertEqual(platform_handoff['read_command'],'review get --id review-final-p0')
+        review,_=driver.get_review(platform_handoff['review_id'])
+        self.assertEqual(review['data']['review']['data_id'],target[1])
+        self.assertEqual(self.completion(str(use))['status'],'completed')
 
     def test_scope_submission_stays_open_after_child_draft_and_advances_on_root_receipt(self):
         candidate,_=self.candidate_delivery('saved_draft')
@@ -175,6 +332,23 @@ class AcceptanceTests(unittest.TestCase):
         self.adopt(ids=['P0'])
         self.assertEqual(s.read_scope(self.root,'task')['scope_items'][0]['state'],'submitted')
         self.assertEqual(self.completion(note)['status'],'completed')
+
+    def test_historical_acceptance_keeps_missing_plan_authority_visible(self):
+        self.candidate_delivery('submitted')
+        task=t.read_task(self.root,'task')['task']
+        old=Path(task['plan_ref']['path']); ref=task['plan_ref']
+        original=s.read_contract(self.root,'request','request')['contract']
+        with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),t.transaction(self.root) as c:
+            s.set_contract(c,self.root,'request','request',{**original['body'],'authority_refs':[ref,self.evidence]},self.brief,self.lead)
+        t.store.plan_history_path(old,ref['sha256']).unlink()
+        old.write_text('Current working page with a different purpose statement.')
+        check=self.cli('work-check','--request','request','--for','handoff')
+        self.assertTrue(check['ready'],check['missing'])
+        history=next(item for item in check['checks'] if item['id'].endswith('.named_authority'))
+        self.assertEqual(history['status'],'historical_unavailable')
+        self.assertTrue(any(r['status']=='unknown' and r['ref']['sha256']==ref['sha256'] for r in check['sources']))
+        self.adopt(ids=['P0'])
+        self.assertEqual(s.read_scope(self.root,'task')['scope_items'][0]['state'],'submitted')
 
     def test_explicit_current_candidate_preserves_older_version_and_plan_as_evidence(self):
         candidate,_=self.candidate_delivery('candidate')
@@ -261,7 +435,7 @@ class AcceptanceTests(unittest.TestCase):
         history=__import__('harness_tasks').read_task(self.root,'task')['events']
         original=[e for e in history if e['kind']=='review-conclusion-indexed' and e['payload']['return_id']=='issue-return']
         self.assertEqual(original[-1]['payload']['conclusion'],'material_issue')
-    def test_changed_quantity_invalidates_exact_report_review_and_bilingual_binding(self):
+    def test_changed_quantity_invalidates_exact_report_and_review_binding(self):
         candidate,_=self.candidate_delivery('candidate')
         self.assertTrue(self.cli('work-check','--request','request','--for','handoff')['ready'])
         body=json.loads(Path(candidate['path']).read_bytes());body['processDataSet']['exchanges']['exchange'][0]['meanAmount']='2'
@@ -269,12 +443,12 @@ class AcceptanceTests(unittest.TestCase):
         changed=self.cli('work-check','--request','request','--for','handoff')
         self.assertFalse(changed['ready'])
         ids=[x['id'] for x in changed['missing']]
-        for name in ('structure_references','scientific_review','unit_quantity_and_meaning','bilingual_meaning'):
+        for name in ('structure_references','scientific_review'):
             self.assertTrue(any(name in ident for ident in ids),(name,ids))
         self.assertTrue((self.root/'gate-report.json').is_file())
 
-    def changed_review_delivery(self):
-        original,_=self.candidate_delivery('candidate')
+    def changed_review_delivery(self, *, index_opinion=True):
+        original,_=self.candidate_delivery('candidate',index_opinion=index_opinion)
         body=json.loads(Path(original['path']).read_bytes())
         body['processDataSet']['processInformation']['dataSetInformation']['common:generalComment']='Author clarified the original use limit after reading the independent opinion.'
         current=self.save('current-canonical-candidate',body)
@@ -289,6 +463,24 @@ class AcceptanceTests(unittest.TestCase):
         argv=['work-dispose','--return-id','changed-return','--use','adopt','--decision',note['path'],'--scope','P0',
             '--apply-review','opinion','--handling',report['path']]
         return original,current,report,argv
+
+    def test_one_plain_opinion_and_author_report_reach_final_adoption_without_index(self):
+        _,_,report,argv=self.changed_review_delivery(index_opinion=False)
+        from scientific_review.rounds import opinion_view
+        with contextlib.closing(t._connect(self.root,True)) as c:
+            handoff=opinion_view(c,self.root,t.read_request(self.root,'review'))
+            self.assertIn('我核对了原换算',handoff['opinion']['text'])
+            self.assertEqual(handoff['opinion']['tracking']['budget_state'],'used')
+        self.cli(*argv,'--acceptance','final')
+        after=self.cli('work-check','--request','request','--for','handoff','--summary')
+        self.assertTrue(after['ready'],after['remaining_checks'])
+        applied,=after['members'][0]['lead_applications']
+        self.assertEqual(applied['review_return_id'],'opinion')
+        self.assertEqual(applied['handling_refs'],[report])
+        self.assertEqual(after['members'][0]['checks']['scientific_review']['source_refs'],[handoff['ref']])
+        all_checks=self.cli('work-check','--request','request','--for','handoff')['checks']
+        self.assertFalse(any(row['id'].endswith(('unit_quantity_and_meaning','bilingual_meaning')) for row in all_checks))
+        self.assertFalse(any(e['kind']=='review-conclusion-indexed' for e in t.read_task(self.root,'task')['events']))
 
     def test_explicit_lead_application_binds_handling_body_and_use_without_rewriting_review(self):
         original,current,report,argv=self.changed_review_delivery()
@@ -450,13 +642,12 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(result['code'],'stale_or_untrusted_check')
         self.assertEqual(s.read_scope(self.root,'task')['remaining_count'],1)
 
-    def test_actual_slag_copy_quantity_change_keeps_originals_and_demands_affected_evidence(self):
-        source=BIN.parent/'materials/packages/tiangong-package-gap-global-main-20261110/apple-scm-reuse-20261110/scm/ggbfs-accepted-process-readback-20261114.json'
-        if not source.is_file():
-            self.skipTest('Original local SCM evidence is unavailable in this checkout')
-        original_bytes=source.read_bytes();original=json.loads(original_bytes)
-        body=original['process']
-        self.assertIn('processDataSet',body)
+    def test_quantity_change_keeps_originals_and_demands_affected_evidence(self):
+        from review_fixtures import process, save
+        body = process()
+        source = self.root/'original-process.json'
+        save(source, body)
+        original_bytes = source.read_bytes()
         candidate,_=self.candidate_delivery('candidate',body)
         original_gate=(self.root/'gate-report.json').read_bytes()
         original_opinion=(self.root/'opinion.json').read_bytes()
@@ -467,7 +658,7 @@ class AcceptanceTests(unittest.TestCase):
             try:amount=Decimal(str(exchange['meanAmount']))
             except (KeyError,InvalidOperation):continue
             if amount.is_finite():break
-        else:self.fail('The original slag candidate has no explicit finite exchange quantity')
+        else:self.fail('The original candidate has no explicit finite exchange quantity')
         old_amount=exchange['meanAmount'];old_resulting=exchange.get('resultingAmount')
         exchange['meanAmount']=str(amount+Decimal('1'))
         self.assertNotEqual(Decimal(str(old_amount)),Decimal(exchange['meanAmount']))
@@ -476,7 +667,7 @@ class AcceptanceTests(unittest.TestCase):
         check=self.cli('work-check','--request','request','--for','handoff')
         self.assertFalse(check['ready'])
         missing=[item['id'] for item in check['missing']]
-        for name in ('structure_references','scientific_review','unit_quantity_and_meaning','bilingual_meaning'):
+        for name in ('structure_references','scientific_review'):
             self.assertTrue(any(name in ident for ident in missing),(index,name,missing))
         self.assertEqual((self.root/'gate-report.json').read_bytes(),original_gate)
         self.assertEqual((self.root/'opinion.json').read_bytes(),original_opinion)
@@ -536,19 +727,24 @@ class AcceptanceTests(unittest.TestCase):
         review_contract=self.save('plain-review-contract',self.agreement('evidence',[candidate]))
         created=self.cli('work-request','--task','task','--review-of','request','--brief',str(brief),'--contract',review_contract['path'])
         self.assertEqual(created['input_ref']['path'],str(brief))
-        opinion=self.root/'plain-opinion.md';opinion.write_text('Supported for the original local fixture use; no scientific production claim.')
-        returned=self.cli('work-return','--request',created['id'],'--result',str(opinion),actor='reviewer')
-        indexed=self.cli('work-review-record','--return-id',returned['id'],'--conclusion','supported_with_limits','--basis',str(opinion))
-        packet=json.loads(Path(indexed['submission_ref']['path']).read_bytes())
+        from production_review import independent_task_input
+        frozen=independent_task_input(self.root,created,'scientific_reviewer',t)['frozen_submission_ref']
+        packet=json.loads(Path(frozen['path']).read_bytes())
         self.assertEqual(packet['original_brief_ref'],created['input_ref'])
         self.assertEqual(json.loads(Path(packet['artifact_refs'][0]['path']).read_bytes()),body)
+        opinion=self.root/'plain-opinion.md';opinion.write_text('Supported for the original local fixture use; no scientific production claim.')
+        returned=self.cli('work-return','--request',created['id'],'--result',str(opinion),actor='reviewer')
         self.assertEqual(brief.read_text(),'Assess the exact candidate and its declared units and use. Explain the conditions directly to the author.')
         with patch.dict(os.environ,{'CODEX_THREAD_ID':'lead'}),t.transaction(self.root) as c:
             s.set_contract(c,self.root,'request','request',self.agreement('candidate',[gate]),self.brief,self.lead)
         report=self.save('plain-author-handling',{'response':'Handled the original opinion and retained its exact use limits'})
         self.call(self.worker,'return',{'id':'return','request_id':'request','result_ref':report,'summary':'Original author handling',
             'artifact_refs':[artifact],'coverage':['P0'],'remaining_scope':[]})
+        self.cli('work-dispose','--return-id','return','--decision',self.evidence['path'],'--use','adopt',
+                 '--scope','P0','--apply-review',returned['id'],'--handling',report['path'])
         self.assertTrue(self.cli('work-check','--request','request','--for','handoff')['ready'])
+        indexed=self.cli('work-review-record','--return-id',returned['id'],'--conclusion','supported_with_limits','--basis',str(opinion))
+        self.assertEqual(indexed['submission_ref'],frozen)
         changed=json.loads(Path(candidate['path']).read_bytes())
         changed['processDataSet']['exchanges']['exchange'][0]['meanAmount']='2'
         Path(candidate['path']).write_text(json.dumps(changed))

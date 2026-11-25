@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import test_harness_tasks as fixtures
 import harness_tasks as tasks
-import harness_maintenance as maintenance
+from task_ledger import maintenance
 import harness_feedback as feedback
 
 

@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"$(git rev-parse --show-toplevel)/bin/harness_context_hook.py\"",
+            "command": "hook_root=$(git rev-parse --show-toplevel) && hook_python=\"$hook_root/.venv/bin/python\" && { [ -x \"$hook_python\" ] || hook_python=python3; } && exec \"$hook_python\" -B \"$hook_root/bin/harness_context_hook.py\"",
             "timeout": 2,
             "additionalContextLimit": 0,
             "statusMessage": "读取当前责任与完整余项入口"
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"$(git rev-parse --show-toplevel)/bin/harness_context_hook.py\"",
+            "command": "hook_root=$(git rev-parse --show-toplevel) && hook_python=\"$hook_root/.venv/bin/python\" && { [ -x \"$hook_python\" ] || hook_python=python3; } && exec \"$hook_python\" -B \"$hook_root/bin/harness_context_hook.py\"",
             "timeout": 2,
             "additionalContextLimit": 0,
             "statusMessage": "读取当前责任与完整余项入口"
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -B \"$(git rev-parse --show-toplevel)/bin/harness_context_hook.py\"",
+            "command": "hook_root=$(git rev-parse --show-toplevel) && hook_python=\"$hook_root/.venv/bin/python\" && { [ -x \"$hook_python\" ] || hook_python=python3; } && exec \"$hook_python\" -B \"$hook_root/bin/harness_context_hook.py\"",
             "timeout": 2,
             "additionalContextLimit": 0,
             "statusMessage": "读取当前责任与完整余项入口"

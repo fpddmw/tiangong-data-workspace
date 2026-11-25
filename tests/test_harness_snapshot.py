@@ -74,10 +74,10 @@ class SnapshotTests(unittest.TestCase):
         receipt=json.loads(result.stdout);saved=json.loads(path.read_bytes())
         self.assertEqual(saved['scope']['total'],9);self.assertEqual(receipt['counts']['deliverable']['total'],9)
         self.assertEqual(saved['pagination']['shown'],2);self.assertEqual(saved['pagination']['total'],14)
-        self.assertEqual(len(saved['history']['events']),2)
+        self.assertNotIn('events',saved['history'])
         ids=[];offset=0
         while True:
-            page=snap.read(self.root,task_id='task',limit=2,offset=offset)['work']['history']
+            page=snap.read(self.root,task_id='task',limit=2,offset=offset,history=True)['work']['history']
             ids.extend(e['id'] for e in page['events'])
             if page['next_offset'] is None:break
             offset=page['next_offset']

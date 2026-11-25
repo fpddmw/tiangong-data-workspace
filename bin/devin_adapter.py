@@ -18,6 +18,17 @@ from harness_hosts import NativeStartRejected
 from safe_diagnostics import safe_value
 
 
+STANDARD_SWE2 = ('swe-2-high', 'swe-2-medium', 'swe-2-max')
+
+
+def option_values(items):
+    for item in items:
+        if 'group' in item:
+            yield from option_values(item.get('options', []))
+        else:
+            yield item.get('value')
+
+
 class DevinAdapter:
     requires_program_work_root = True
     tool_boundary = 'ACP client file permissions and macOS sandboxed terminals; shared collaboration MCP transport'
@@ -31,7 +42,7 @@ class DevinAdapter:
             raise CapabilityUnavailable('Devin uses the existing programmatic work-dispatch entry')
         if config['provider'].get('selection') != 'existing-host-configuration':
             raise CapabilityUnavailable('Authenticate through the official Devin CLI; no provider/key provisioning')
-        if config['model'] not in ('swe-2-high', 'swe-2-medium', 'swe-2-max'):
+        if config['model'] not in STANDARD_SWE2:
             raise CapabilityUnavailable('Select an exact, verified SWE-2 standard model ID; no fuzzy, Flash or paid fallback')
         if config.get('profile') == 'native-workspace':
             configure_workspace_sandbox(root, config)
@@ -113,6 +124,8 @@ class DevinAdapter:
         except OSError as exc:
             raise NativeStartRejected(type(exc).__name__) from exc
         self.process = self.host.process
+        if executing and (capacity := self.config.get('_devin_capacity')):
+            capacity.launched = True
         init = self.host.call('initialize', {'protocolVersion': 1,
             'clientCapabilities': {'fs': {'readTextFile': True, 'writeTextFile': True}, 'terminal': True},
             'clientInfo': {'name': 'tiangong-harness', 'version': '1'}})
@@ -166,26 +179,29 @@ class DevinAdapter:
         self._guard()
 
     def _verify_model(self, response, *, required=True):
-        options = response.get('configOptions', [])
-        selected={item['id']:item.get('currentValue') for item in options}
-        model=selected.get('model')
-        # Devin exposes a family representative plus thought level and speed.
-        # Its model selector remains swe-2-high even after thought_level=max.
-        if model in ('swe-2-high','swe-2-medium','swe-2-max') and selected.get('thought_level'):
-            model='swe-2-'+str(selected['thought_level'])
-            if selected.get('speed')!='standard':model+='-unverified-standard-speed'
+        options = {item['id']: item for item in response.get('configOptions', [])}
+        selected = {key: item.get('currentValue') for key, item in options.items()}
+        model = selected.get('model')
+        if model in STANDARD_SWE2:
+            if 'speed' in options and selected['speed'] != 'standard':
+                raise CapabilityUnavailable('Native Devin Speed is not standard: ' + str(selected['speed']))
+            if 'thought_level' in options:
+                if 'speed' not in options:
+                    # Some ACP catalogs separate standard and Lightning in Model itself.
+                    offered = set(option_values(options['model'].get('options', [])))
+                    if model not in offered or not any(name + '-lightning' in offered for name in STANDARD_SWE2):
+                        raise CapabilityUnavailable('Native Devin model catalog does not distinguish standard SWE-2 from Lightning')
+                model = 'swe-2-' + str(selected['thought_level'])
         if model != self.config['model'] and (required or model is not None):
             raise CapabilityUnavailable('Native Devin model differs from exact requested SWE-2 ID: ' + str(model))
         if model is not None:self.verified_model_configuration=selected
         return model
 
     def _select_model(self,response,sid,guard,boundary):
-        def values(items):
-            return [v for item in items for v in (values(item['options']) if 'group' in item else [item.get('value')])]
         def select(config_id,value):
             nonlocal response
             option=next((o for o in response.get('configOptions',[]) if o.get('id')==config_id),None)
-            if not option or value not in values(option.get('options',[])):
+            if not option or value not in option_values(option.get('options',[])):
                 raise CapabilityUnavailable('Requested standard SWE-2 configuration is not offered: '+config_id)
             if option.get('currentValue')==value:return
             with native_start_boundary(guard,boundary):
@@ -193,7 +209,7 @@ class DevinAdapter:
         options={o['id']:o for o in response.get('configOptions',[])}
         current=options.get('model',{}).get('currentValue')
         if 'thought_level' in options:
-            if current not in ('swe-2-high','swe-2-medium','swe-2-max'):select('model','swe-2-high')
+            if current not in STANDARD_SWE2:select('model','swe-2-high')
             select('thought_level',self.config['model'].removeprefix('swe-2-'))
             if any(o.get('id')=='speed' for o in response.get('configOptions',[])):select('speed','standard')
         elif current!=self.config['model']:

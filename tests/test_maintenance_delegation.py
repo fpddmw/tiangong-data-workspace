@@ -15,8 +15,8 @@ from unittest.mock import patch
 import test_harness_tasks as fixtures
 import test_agent_runtime as native
 import harness_tasks as t
-import harness_maintenance as maintenance
-import harness_sessions as sessions
+from task_ledger import maintenance
+from task_ledger import sessions
 import harness_feedback as feedback
 import context
 import agent_runtime

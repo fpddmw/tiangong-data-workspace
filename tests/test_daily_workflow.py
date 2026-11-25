@@ -14,11 +14,10 @@ import agent_runtime as runtime
 import codex_adapter
 import harness_tasks as core
 import run_worker
-import harness_entry
-import harness_discovery
+from workspace_queries import discovery as harness_discovery
 import harness_knowledge
-import harness_maintenance
-import harness_business
+from task_ledger import maintenance as harness_maintenance
+from task_ledger import business as harness_business
 import context
 
 

@@ -1,15 +1,14 @@
 // Actual child-process buffer boundaries; fake read-only CLI, no data/model calls.
 import assert from 'node:assert/strict'
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,symlinkSync,rmSync} from 'node:fs'
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join,resolve} from 'node:path'
 import {createHash} from 'node:crypto'
 import {packageCoordinates,groupPackages} from '../bin/dsh_packages.mjs'
 
-const root=mkdtempSync(join(tmpdir(),'htam-package-read-'))
+const root=mkdtempSync(join(tmpdir(),"htam package's read-"))
 try {
-  mkdirSync(join(root,'.venv','bin'),{recursive:true});mkdirSync(join(root,'bin'))
-  symlinkSync(resolve(process.argv[2]),join(root,'.venv','bin','python'))
+  mkdirSync(join(root,'bin'))
   writeFileSync(join(root,'bin','harness.py'),`import hashlib,json,sys
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
@@ -53,10 +52,11 @@ else:print(json.dumps(body,ensure_ascii=False))
   assert.equal(calls.length,2)
   assert.ok(calls.every(argv=>argv[2]==='work-packages' && !argv.includes('--execute')))
   assert.ok(calls[1].includes('--output'))
+  assert.ok(overflow.detailCommand.includes("'\\''"), 'The apostrophe in the checkout path is escaped')
   const accepted=await packageCoordinates(root)
   assert.equal(Object.hasOwn(accepted,'capacity'),false)
   assert.equal(readFileSync(join(root,'calls.jsonl'),'utf8').trim().split('\n').length,3)
-  const {capacity,...withCapacity}=await packageCoordinates(root,{includeCapacity:true})
+  const {capacity,...withCapacity}=await packageCoordinates(root,{includeCapacity:true,python:resolve(process.argv[2])})
   assert.deepEqual(withCapacity,accepted)
   assert.deepEqual(capacity,{
     observed_at_unix:1794940395.25,

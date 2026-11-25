@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import harness_discovery as discovery
+from workspace_queries import discovery
 import harness_hook as hooks
 import test_harness_tasks as fixtures
 

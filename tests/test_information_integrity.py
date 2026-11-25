@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch, Mock
 import safe_diagnostics as safe
 import execution_lease as lease
-from claude_adapter import ClaudeAdapter
+from native_hosts.claude_adapter import ClaudeAdapter
 from codex_host import CodexHost
 
 ROOT=Path(__file__).resolve().parents[1]

@@ -79,6 +79,33 @@ class DevinTests(unittest.TestCase):
         with self.assertRaises(CapabilityUnavailable):adapter._verify_model({'configOptions':changed})
         with self.assertRaises(CapabilityUnavailable):adapter._verify_model({'configOptions':changed[:2]})
 
+    def test_standard_model_needs_a_distinct_same_family_lightning_option_without_speed(self):
+        from unittest.mock import Mock
+        self.config['model'] = 'swe-2-max'
+        adapter = DevinAdapter(self.root, self.config)
+        adapter.host = Mock()
+        model = {'id': 'model', 'currentValue': 'swe-2-high'}
+        thought = {'id': 'thought_level', 'currentValue': 'max', 'options': [{'value': 'max'}]}
+        for current, choices, verified in (
+            ('swe-2-high', ['swe-2-high', 'swe-2-medium-lightning'], True),
+            ('swe-2-medium-lightning', ['swe-2-high', 'swe-2-medium-lightning'], False),
+            ('swe-2-high', ['swe-2-high', 'swe-2-flash-medium-lightning'], False),
+            ('swe-2-high', ['swe-2-medium-lightning'], False),
+        ):
+            with self.subTest(current=current, choices=choices):
+                group = {'group': 'Models', 'options': [{'value': item} for item in choices]}
+                response = {'configOptions': [{**model, 'currentValue': current, 'options': [group]}, thought]}
+                if verified:
+                    adapter._select_model(response, 'original', lambda: None, None)
+                    self.assertEqual(adapter.verified_model, 'swe-2-max')
+                    adapter.host.call.assert_not_called()
+                    explicit_speed = {'id': 'speed', 'currentValue': 'fast'}
+                    with self.assertRaises(CapabilityUnavailable):
+                        adapter._verify_model({'configOptions': [*response['configOptions'], explicit_speed]})
+                else:
+                    with self.assertRaises(CapabilityUnavailable):
+                        adapter._verify_model(response)
+
     def test_only_explicit_native_response_before_prompt_is_start_rejection(self):
         native_error={'code':-12345,'message':'Unrelated startup refusal','data':{'retryable':False}}
         for received,prompt,expected in ((True,False,NativeStartRejected),(False,False,ACPError),(True,True,ACPError)):

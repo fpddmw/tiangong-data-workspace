@@ -1,16 +1,21 @@
-# 职责入口
+# 按原委派找职责
 
-所有 agent 在原工作区直接读取原任务和本职文件。职责由用户任命或原委派决定，程序不从长句、目录名称或当前状态推断职责，也不生成另一份职责文档。
+## 数据交付与平台反馈
 
-| 职责 | 直接读取 |
-|---|---|
-| 总主 | [总主](global-main.md) |
-| 任务主审 | [任务主审](task-lead.md) |
-| 完整工作包执行 | [执行职责](data.md) |
-| 科学独立审阅 | [审阅职责](reviewer.md) |
-| 维护负责人 | [维护职责](maintainer.md) |
-| 用户指定的轮询维护者 | [平台送审后的意见汇总](platform-feedback.md) |
+| 原委派交给你的工作 | 从哪里开始 | 结果交给谁 |
+| --- | --- | --- |
+| 决定数据库这版该覆盖什么 | [总主](global-main.md)读建设目标、现库覆盖和外部需求 | 向主审明确预期用途和验收终点，向用户说明投入取舍 |
+| 把整个工作包交付给使用者 | [任务主审](task-lead.md)读原范围、当前计划和已有返回 | 安排余项，对采用版本和用途负责，按授权送审，向总主或委托方交付 |
+| 制作或修订数据 | [作者](data.md)读原委派、[现行原则](../docs/data/README.md#现行数据原则)及候选原件 | 找独审、处理意见，把可使用的成果和限制交主审 |
+| 判断一个候选能支持哪些结论 | [科学独审](reviewer.md)打开冻结稿、来源和作者的问题 | 把有依据的科学意见直接交作者 |
+| 汇总平台送审后的新意见 | [用户指定的轮询维护者](platform-feedback.md)沿审核号读取平台原文 | 按对象及送审版本汇总给原包主审 |
 
-执行者按本次工作直接取所需活动原文：[科学制作](scientific-production.md)、[数据支持](data-support.md)、[计算](calculator.md)、[工程执行](engineering.md)。从 [LOCAL_TOOLS](../LOCAL_TOOLS.md) 选择工具并读取适用 Skill；科学判断读[数据规则](DATA-RULES.md)，实际交接读[协作边界](COORDINATION.md)。
+## 共享基础设施维护
 
-原 brief、成果和证据沿原路径读取，运行器只传递准确文件位置。当前状态通过原 harness 查询；已有任务或请求可用 `context.py --task ID` 或 `--request ID` 取得结构化记录。
+| 原委派交给你的工作 | 从哪里开始 | 结果交给谁 |
+| --- | --- | --- |
+| 修多个包共用的工具或工作区入口 | [共享设施维护者](maintainer.md)从[当前事项](../docs/workspace/agent-autonomy-plan.md)找到原维护单 | 沿原 board 交回修复与验证依据，由遇到故障的一方回验 |
+
+专门任务按需取[科学制作](scientific-production.md)、[取证](data-support.md)、[计算](calculator.md)或[工程执行](engineering.md)的方法。交接可直接用普通文字。需要参考时看[三个交接例子](../workflows/dataset-review/reply-templates/交接示例.md)。修改职责时把接手人和实际入口写在对应岗位页，跨岗位的共同约定在[协作说明](COORDINATION.md)维护。
+
+修改职责时读[岗位说明的写法](AGENTS.md)。运行配置中的 coordinator 也从本页选择总主或任务主审。

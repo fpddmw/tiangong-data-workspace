@@ -1,6 +1,7 @@
 """Public commands + real worker transport with scripted NDJSON (no model or remote writes)."""
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 import signal
 import time
 import json
@@ -12,10 +13,12 @@ import unittest
 from unittest.mock import patch
 
 import test_dsh_headless as fixtures
-import harness_sessions as sessions
+from task_ledger import sessions
 import harness_tasks as tasks
 import harness_scope
 import run_worker
+import review_fixtures as review_data
+from dsh_test_runtime import installed_dsh, requires_dsh
 
 
 class CollaborationChainTests(unittest.TestCase):
@@ -51,11 +54,22 @@ class CollaborationChainTests(unittest.TestCase):
         self.cli('work-dispose','--return-id',returned['id'],'--use','adopt','--decision',str(note),
             '--scope',scope_id,'--acceptance','final')
 
+    def offline_provider_pilot(self):
+        import dsh_capacity as capacity
+        from execution_lease import atomic_json
+        queue = capacity._queue(self.f.root)
+        self.assertFalse(queue['entries'])
+        queue.update(policy=capacity.PILOT_POLICY, pilot_provider='htam-offline')
+        atomic_json(capacity._paths(self.f.root)[0], queue)
+
+    def managed_offline_recovery(self):
+        from execution_lease import atomic_json
+        atomic_json(self.f.root/'.control/dsh-recovery.json', {'provider':'htam-offline'})
+
     @contextmanager
     def installed_host(self, initial_phase='seed', **options):
         f = self.f
-        node = '/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness'
-        module = '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js'
+        node, module = installed_dsh()
         provider = Path(__file__).with_name('dsh_scripted_provider.mjs').resolve()
         config = json.loads(f.config_path.read_text())
         config['hosts']['dsh'].update(binary=str(Path(__file__).with_name('dsh_fixture_cli.py').resolve()),
@@ -83,14 +97,13 @@ class CollaborationChainTests(unittest.TestCase):
              patch.object(fixtures.dsh_headless.DeepSeekAdapter, '_query', new=self.native_query):
             yield phase
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),
-                         'Requires the installed Responses adapter')
+    @requires_dsh
     def test_responses_wire_distinguishes_calls_text_and_sse_failure(self):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         from threading import Thread
 
         for scenario in ('structured', 'text', 'broken', 'effect_then_broken', 'automatic', 'read_only_then_broken',
-                         'timeout_once', 'timeout_capped'):
+                         'timeout_once', 'timeout_capped', 'timeout_after_content', 'upstream_timeout'):
             with self.subTest(scenario=scenario):
                 self.f = fixtures.DeepSeekProgramTests('runTest')
                 self.f.setUp()
@@ -100,10 +113,8 @@ class CollaborationChainTests(unittest.TestCase):
     def _qualify_responses(self, scenario, handler, server_type, thread_type):
         f = self.f
         requests = []
-        original = Path(__file__).resolve().parents[1] / ('materials/packages/'
-            'tiangong-package-gap-global-main-20261110/apple-scm-reuse-20261110/apple/'
-            'material-dispatch-20261115/fe-return-20261117-1710.md')
-        literal = original.read_text() if original.is_file() else '<</bash> printf I-AM-PLAIN-TEXT'
+        traces = []
+        literal = '<</bash> printf I-AM-PLAIN-TEXT\nA legitimate plain-text result.'
         package = run_worker.program_home(tasks.read_request(f.root, 'request'), root=f.root)
         effect = package / 'work' / 'wire-effect.txt'
 
@@ -114,6 +125,7 @@ class CollaborationChainTests(unittest.TestCase):
             def do_POST(self):
                 data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 requests.append(data)
+                traces.append(self.headers.get('traceparent'))
                 step = len(requests)
                 if scenario == 'timeout_once' and step == 1:
                     # No headers arrive for the first request; the next one succeeds.
@@ -123,13 +135,21 @@ class CollaborationChainTests(unittest.TestCase):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
                 self.send_header('x-request-id','offline-wire-'+str(step))
-                if scenario == 'timeout_capped':
+                if scenario in ('timeout_capped','timeout_after_content'):
                     self.end_headers()
+                    if scenario=='timeout_after_content':
+                        self.wfile.write(reply)
                     self.wfile.flush()
                     time.sleep(1.5)
                     return
                 self.send_header('Content-Length', str(len(reply)))
                 self.end_headers()
+                if scenario=='upstream_timeout':
+                    prefix, boundary, terminal=reply.partition(b'event: response.failed\n')
+                    self.wfile.write(prefix)
+                    self.wfile.flush()
+                    time.sleep(60 if os.environ.get('HTAM_DSH_1122_LONG_STALL') else .2)
+                    reply=boundary+terminal
                 self.wfile.write(reply)
 
             def frames(self, step, data):
@@ -139,7 +159,7 @@ class CollaborationChainTests(unittest.TestCase):
                 call = None
                 if scenario in ('structured', 'automatic', 'read_only_then_broken') and step == 1:
                     call = ('create_goal', {'objective': 'Qualify real Responses tool calls', 'max_goal_rounds': 4})
-                if (scenario,step) in (('structured',2),('automatic',6)):
+                if (scenario,step) in (('structured',2),('automatic',6),('read_only_then_broken',5)):
                     previous = next(item for item in reversed(data['input']) if item.get('type') == 'function_call_output')
                     tool_result = previous['output']
                     if isinstance(tool_result, list):
@@ -152,7 +172,7 @@ class CollaborationChainTests(unittest.TestCase):
                     call = ('bash', {'command': 'ls .', 'description': 'Read a directory without changing the original work'})
                 if scenario=='automatic' and step==4:
                     call=('read',{'file_path':str(effect)})
-                if scenario=='automatic' and step==5:
+                if (scenario,step) in (('automatic',5),('read_only_then_broken',4)):
                     call=('get_goal',{})
                 if call:
                     name, arguments = call
@@ -173,8 +193,19 @@ class CollaborationChainTests(unittest.TestCase):
                               ('response.output_text.delta', {'output_index': 0, 'content_index': 0, 'delta': literal}),
                               ('response.output_item.done', {'output_index': 0, 'item': item})]
                 usage = {'input_tokens': 10, 'output_tokens': 3, 'total_tokens': 13}
+                if scenario=='timeout_after_content':
+                    events=events[:-1]
+                    return self.encode(events)
+                if scenario=='upstream_timeout':
+                    failure={'code':'TIMEOUT','message':'Upstream stalled: no response data within the proxy timeout'}
+                    return self.encode(events[:-1]+[('response.failed',{'response':{
+                        'id':'resp_'+str(step),'status':'failed','output':[item],'error':failure}})])
                 events.append(('response.completed', {'response': {'id': 'resp_' + str(step), 'status': 'completed',
                     'output': [item], 'usage': usage}}))
+                return self.encode(events)
+
+            @staticmethod
+            def encode(events):
                 return ''.join('event: '+kind+'\ndata: '+json.dumps({'type': kind, **body})+'\n\n'
                                for kind, body in events).encode()
 
@@ -185,15 +216,31 @@ class CollaborationChainTests(unittest.TestCase):
             try:
                 url = 'http://127.0.0.1:' + str(server.server_port)
                 if scenario in ('broken', 'automatic', 'read_only_then_broken'):
-                    import dsh_capacity as capacity
-                    import execution_lease as execution
-                    queue=capacity._queue(f.root)
-                    queue.update(policy=capacity.PILOT_POLICY,pilot_provider='htam-offline')
-                    execution.atomic_json(capacity._paths(f.root)[0],queue)
+                    self.offline_provider_pilot()
                 timeout_fixture = {'wire_idle_timeout_ms': 550, 'wire_retries': 5} if scenario.startswith('timeout_') else {}
+                if scenario == 'timeout_once':
+                    timeout_fixture['wire_retry_delay_ms'] = 1500
+                if scenario=='timeout_after_content':
+                    timeout_fixture['wire_retries']=1
                 with self.installed_host('wire', wire=url+'/v1', wire_model='deepseek-fixture',
                                          network=scenario == 'read_only_then_broken', **timeout_fixture):
-                    outcome = f._dispatch()
+                    if scenario == 'timeout_once':
+                        from dsh_capacity import snapshot
+                        with ThreadPoolExecutor(max_workers=1) as pool:
+                            future = pool.submit(f._dispatch)
+                            deadline = time.monotonic() + 10
+                            while time.monotonic() < deadline and not future.done():
+                                view = snapshot(f.root)
+                                if view.get('waiting_retry'):
+                                    self.assertEqual(view['counts']['occupied']['total'], 0)
+                                    self.assertEqual(len(requests), 1)
+                                    break
+                                time.sleep(.04)
+                            else:
+                                self.fail('Original backoff did not yield the model seat')
+                            outcome = future.result(timeout=10)
+                    else:
+                        outcome = f._dispatch()
             finally:
                 server.shutdown()
                 thread.join(3)
@@ -209,11 +256,13 @@ class CollaborationChainTests(unittest.TestCase):
         self.assertIn('update_goal', [t.get('name') for t in requests[0]['tools']])
         observation = receipt['native_session_observation']
         timings = receipt['turn_activity']['request_timings']
-        initial_attempts = len(requests) if scenario != 'automatic' else 3
+        initial_attempts = 3 if scenario in ('automatic','read_only_then_broken') else len(requests)
         self.assertEqual(len(timings), initial_attempts, timings)
         for index, attempt in enumerate(timings, 1):
             self.assertGreater(attempt['step'], 0)
             wire, = attempt['http']
+            self.assertRegex(wire['client_traceparent'],r'^00-[0-9a-f]{32}-[0-9a-f]{16}-00$')
+            self.assertEqual(wire['client_traceparent'],traces[index-1])
             self.assertLessEqual(attempt['started_at_ms'], wire['sent_at_ms'])
             self.assertLessEqual(wire['sent_at_ms'], attempt['finished_at_ms'])
             if (scenario, index) != ('timeout_once', 1):
@@ -238,6 +287,36 @@ class CollaborationChainTests(unittest.TestCase):
             self.assertTrue(all(item.get('error_code') == 'TIMEOUT' for item in timings), timings)
             self.assertEqual(len(receipt['turn_activity']['request_retries']), 8)
             self.assertEqual(receipt['turn_activity']['timeout_retry_limits'][0]['failures'], 5)
+            self.assertEqual(outcome['transport_diagnostic']['phase'], 'after_headers_before_model_content')
+            self.assertEqual(outcome['transport_diagnostic']['step'], timings[-1]['step'])
+        if scenario=='timeout_after_content':
+            self.assertEqual(outcome['transport_diagnostic']['phase'],'after_model_content')
+            wire=timings[-1]['http'][-1]
+            self.assertGreater(wire['sse_body']['bytes_received'],0)
+            self.assertNotIn('error_event',wire['sse_body'])
+            self.assertGreaterEqual(timings[-1]['finished_at_ms']-wire['sse_body']['last_byte_at_ms'],450)
+            self.assertEqual(outcome['transport_diagnostic']['local_idle_timeout']['code'],'LLM_STREAM_IDLE_TIMEOUT')
+        if scenario=='upstream_timeout':
+            wire=timings[-1]['http'][-1]
+            terminal=wire['sse_body']['error_event']
+            self.assertEqual((terminal['type'],terminal['code']),('response.failed','TIMEOUT'))
+            self.assertLessEqual(terminal['at_ms'],timings[-1]['finished_at_ms'])
+            self.assertGreaterEqual(terminal['at_ms']-timings[-1]['last_content_at_ms'],
+                                    59_000 if os.environ.get('HTAM_DSH_1122_LONG_STALL') else 120)
+            self.assertEqual(outcome['outcome'],'failed',receipt)
+        if scenario in ('timeout_once', 'timeout_capped'):
+            capacity_events = [event for event in run['events'] if event['kind'] == 'capacity']
+            phases = [event['payload']['phase'] for event in capacity_events]
+            self.assertEqual(phases, ['queued','admitted'] + ['waiting_retry','queued','admitted']*(len(timings)-1) + ['released'])
+            if scenario == 'timeout_capped':
+                closed = datetime.fromisoformat(receipt['turn_activity']['native_terminal_at'])
+                released = datetime.fromisoformat(capacity_events[-1]['created_at'])
+                seconds = (released - closed).total_seconds()
+                self.assertGreaterEqual(seconds, 0)
+                self.assertLess(seconds, 5)
+                if directory := os.environ.get('HTAM_1014_EVIDENCE'):
+                    (Path(directory)/'native-model-release.json').write_text(json.dumps({
+                        'terminal_to_release_seconds': seconds, 'model_requests': len(requests)}, indent=2)+'\n')
         expected_calls = {'structured': ['create_goal', 'update_goal', 'write'], 'effect_then_broken': ['write'],
                           'automatic':['create_goal','write'], 'read_only_then_broken':['create_goal','bash']}
         self.assertEqual([call['name'] for call in observation['tool_calls']], expected_calls.get(scenario, []), receipt)
@@ -249,11 +328,18 @@ class CollaborationChainTests(unittest.TestCase):
         if 'write' in expected_calls.get(scenario, []):
             self.assertEqual(effect.read_text(), 'one original effect')
             self.assertTrue(any(item.get('type') == 'function_call_output' for item in requests[1]['input']))
-        if 'broken' in scenario or scenario in ('automatic', 'timeout_capped'):
+        if 'broken' in scenario or scenario in ('automatic','timeout_capped','timeout_after_content'):
             self.assertEqual(outcome['outcome'], 'failed', receipt)
             self.assertEqual(observation['native_error']['code'],
-                             'TIMEOUT' if scenario == 'timeout_capped' else 'PI_AI_ERROR')
-        else:
+                             'TIMEOUT' if scenario.startswith('timeout_') else 'PI_AI_ERROR')
+            reread = run_worker.programmatic(f.root, 'request', read_result=True, exact_run_id=run['id'])
+            self.assertEqual(reread['transport_diagnostic'], outcome['transport_diagnostic'])
+            if not scenario.startswith('timeout_'):
+                diagnostic = outcome['transport_diagnostic']
+                self.assertEqual(diagnostic['phase'], 'invalid_complete_event')
+                self.assertEqual(diagnostic['response']['request_ids'], timings[-1]['http'][-1]['request_ids'])
+                self.assertNotIn('SECRET_FIXTURE_INVALID_JSON', json.dumps(diagnostic))
+        elif scenario!='upstream_timeout':
             self.assertEqual(outcome['outcome'], 'succeeded', receipt)
             self.assertEqual(observation['final_text'], literal)
         if scenario in ('broken', 'automatic', 'read_only_then_broken'):
@@ -266,7 +352,7 @@ class CollaborationChainTests(unittest.TestCase):
             self.assertEqual(len(probes),1,probes)
             self.assertEqual(probes[0]['failed_event']['body_omitted'],True)
             self.assertNotIn('SECRET_FIXTURE_INVALID_JSON',json.dumps(probes))
-            if scenario=='automatic':
+            if scenario in ('automatic','read_only_then_broken'):
                 child,=[event for event in facts if event['kind']==CLAIM]
                 resumed=tasks.read_run(f.root,child['payload']['next_run_id'])
                 self.assertEqual(resumed['outcome'],'succeeded',resumed)
@@ -274,23 +360,33 @@ class CollaborationChainTests(unittest.TestCase):
                 answer=fixtures.runtime.read_receipt(f.root,resumed['latest_receipt'])['result']
                 self.assertEqual(answer['native_session_observation']['native_goal']['id'],observation['native_goal']['id'])
                 self.assertEqual(answer['native_goal_observation']['goal']['phase'],'complete')
-                self.assertEqual(len(requests),7)
-                self.assertIsNotNone(answer['turn_activity']['first_effective_action_at'])
+                if scenario == 'automatic':
+                    self.assertEqual(len(requests),7)
+                    self.assertIsNotNone(answer['turn_activity']['first_effective_action_at'])
+                else:
+                    self.assertEqual(len(requests),6)
+                    self.assertEqual(receipt['turn_activity']['ending_turn_verified_progress'], [])
+                    self.assertEqual(receipt['shell_results'][0]['exit_code'], 0)
+                    self.assertEqual(observation['native_goal']['roundsStarted'], 0)
+                    self.assertEqual(answer['native_session_observation']['native_goal']['phase'],'complete')
+                    self.assertFalse(effect.exists())
             else:
                 self.assertFalse(any(event['kind']==CLAIM for event in facts))
                 self.assertEqual(receipt['turn_activity']['ending_turn_verified_progress'], [])
-                if scenario == 'read_only_then_broken':
-                    self.assertEqual(receipt['shell_results'][0]['exit_code'], 0)
-                    self.assertEqual(observation['native_goal']['phase'], 'active')
         if directory := os.environ.get('HTAM_1010_EVIDENCE'):
             path = Path(directory) / ('fe-' + scenario + '.json')
             path.write_text(json.dumps({'outcome': outcome['outcome'], 'observed': observation,
                 'tool_choice': requests[0].get('tool_choice'), 'tool_declaration': tool,
                 'received_http_requests': len(requests), 'local_effect': effect.exists()}, ensure_ascii=False, indent=2))
-        if directory := os.environ.get('HTAM_1014_EVIDENCE'):
+        if (directory := os.environ.get('HTAM_DSH_1122_EVIDENCE')) and scenario in (
+                'text','broken','timeout_after_content','upstream_timeout'):
+            (Path(directory)/('wire-'+scenario+'.json')).write_text(json.dumps({
+                'fixture':scenario,'diagnostic':outcome.get('transport_diagnostic'),'requests':timings,
+                'native_error':observation.get('native_error'), 'native_terminal':observation['terminal'],
+                'client_and_server_trace_ids_match':True},ensure_ascii=False,indent=2)+'\n')
+        if (directory := os.environ.get('HTAM_1014_EVIDENCE')) and (observer := os.environ.get('HTAM_1014_OBSERVER')):
             from importlib.util import module_from_spec, spec_from_file_location
-            source=Path(__file__).resolve().parents[1]/('installation/maintenance-20261116-noon/continuation-handoff/'
-                'implementation/dsh-workflow-20261119/review-benchmark.py')
+            source=Path(observer)
             spec=spec_from_file_location('dsh_benchmark_receipt',source)
             benchmark=module_from_spec(spec);spec.loader.exec_module(benchmark)
             measured=benchmark.observation(f.root,run,{'case':scenario,'arm':'scripted','load_target':1})
@@ -298,8 +394,7 @@ class CollaborationChainTests(unittest.TestCase):
             measured.update(model_http_requests=len(requests),production_operations=0,isolated=True)
             (Path(directory)/('wire-'+scenario+'.json')).write_text(json.dumps(measured,ensure_ascii=False,indent=2)+'\n')
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),
-                         'Requires the installed DSH native services; no model calls')
+    @requires_dsh
     def test_persisted_goal_resume_through_public_dispatch_review_revision_and_adoption(self):
         f = self.f
         case = os.environ.get('HTAM_1010_A08')
@@ -390,88 +485,76 @@ class CollaborationChainTests(unittest.TestCase):
                     'lead_task_state': tasks.read_task(f.root, 'task')['task']['state']}
                 (Path(directory)/'a08-native-chain.json').write_text(json.dumps(proof, ensure_ascii=False, indent=2))
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),
-                         'Requires installed DSH; no external model calls')
-    def test_installed_a02_review_gets_exact_facts_and_original_sources(self):
-        from a02_review_verifier import A02_PACKET, read_exact
+    @requires_dsh
+    def test_installed_initial_review_gets_exact_facts_and_sources(self):
         from harness_package import launch_spec
-        from review_facts import collect
-        workspace = Path(__file__).resolve().parents[1]
-        if not (workspace/A02_PACKET).is_file() or not (workspace/'.control/harness.sqlite').is_file():
-            self.skipTest('Pinned A02 originals and work ledger are required')
-        review = tasks.read_request(workspace, Path(A02_PACKET).parent.name)
-        packet = json.loads(read_exact(review['input_ref']))
-        initial = collect(workspace, tasks.read_request(workspace, review['parent_request_id']), packet, review['created_at'])
         f = self.f
-        originals = f.home/'a02-originals'
-        originals.mkdir()
-        selected = []
-        for ref in packet['artifact_refs']:
-            path = originals/Path(ref['id']).name
-            path.write_bytes(read_exact(ref))
-            selected.append(str(path))
-        verifier = f.home/'a02_review_verifier.py'
-        verifier.write_bytes(Path(__file__).with_name(verifier.name).read_bytes())
-        with self.installed_host('seed', a02_artifacts=selected, a02_question=packet['review_scope'],
-                                 a02_verifier=str(verifier), python=sys.executable) as phase:
+        candidate, flow, source = (f.home/name for name in ('candidate.json','flow.json','basis.txt'))
+        body = review_data.process()
+        review_data.save(candidate, body)
+        review_data.save(flow, review_data.flow())
+        source.write_text('Measured 125 g of dry input per kg of product.')
+        selected = [str(candidate), str(flow), str(source)]
+        verifier = f.home/'check-review-facts.py'
+        verifier.write_text('''import json,sys
+from hashlib import sha256
+from pathlib import Path
+facts=json.loads(Path(sys.argv[1]).read_bytes())
+subject,=facts['processes']
+assert subject['readback']['status']=='complete_match'
+assert subject['basis']['reference_exchanges'][0]['resulting_amount']=='1'
+assert subject['exchanges'][1]['resulting_amount']=='0.125'
+flow,=facts['frozen_datasets'].values()
+assert json.loads(Path(flow['path']).read_bytes())['flowDataSet']
+basis,=[ref for ref in facts['original_artifacts'] if ref['id'].endswith('basis.txt')]
+raw=Path(basis['path']).read_bytes()
+assert sha256(raw).hexdigest()==basis['sha256'] and b'125 g' in raw
+print('opening-review-facts-verified')
+''')
+        self.managed_offline_recovery()
+        with self.installed_host('seed', opening_artifacts=selected, opening_verifier=str(verifier),
+                                 reviewer_transport_error=True, python=sys.executable) as phase:
             self.evidence_contract('task','request')
             seed = f._dispatch()
             author = tasks.read_run(f.root, seed['run_id'])
             archive = Path(launch_spec(f.root, author)['evidence_home'])/'runs'/author['id']/'delivery'
-            observations = [process['readback'] for process in initial['processes']]
-            observations.extend(initial['verified_flow_reads'].values())
-            for observation in observations:
-                ref = observation['record_ref']
-                record = json.loads(read_exact(ref))
-                target = archive/Path(ref['path']).parent.name
-                target.mkdir(parents=True)
-                for key in ('stdout_ref', 'output_ref', 'candidate_ref'):
-                    if not (original := record.get(key)):
-                        continue
-                    saved = target/Path(original['path']).name
-                    saved.write_bytes(read_exact(original))
-                    record[key] = {**original, 'path':str(saved)}
-                record.update(run_id=author['id'], request_id=author['request_id'])
-                (target/'record.json').write_text(json.dumps(record, ensure_ascii=False))
-            phase[0] = 'a02_review'
-            note = f.home/'resume-a02.md'
-            note.write_text('Resume the exact original isolated author with the frozen A02 originals.')
+            readback = review_data.readback(archive, 'before', run_id=author['id'], request_id=author['request_id'],
+                                           finished_at=fixtures.runtime.now(), body=body)
+            phase[0] = 'opening_review'
+            note = f.home/'resume-review.md'
+            note.write_text('Resume the exact original author and request review of the isolated candidates.')
             outcome = f._dispatch(instructions=note)
         self.assertEqual(outcome['outcome'], 'succeeded', outcome)
         current = tasks.read_run(f.root, outcome['run_id'])
         self.assertEqual(current['native_identity']['id'], author['native_identity']['id'])
-        run, = [r for r in tasks.read_task(f.root,'task')['runs'] if r['request_id']!='request']
+        initial_review, run = [r for r in tasks.read_task(f.root,'task')['runs'] if r['request_id']!='request']
+        self.assertEqual(initial_review['outcome'], 'failed')
+        self.assertEqual(initial_review['return_ids'], [])
+        self.assertEqual(run['request_id'], initial_review['request_id'])
+        self.assertEqual(run['native_identity']['id'], initial_review['native_identity']['id'])
+        self.assertNotEqual(run['native_identity']['id'], author['native_identity']['id'])
         self.assertEqual(run['outcome'], 'succeeded', run)
         result = fixtures.runtime.read_receipt(f.root,run['latest_receipt'])['result']
-        self.assertIn('A02-facts-verified', result['result'])
+        self.assertIn('opening-review-facts-verified', result['result'])
         self.assertEqual(result['turn_activity']['tool_calls'], 1)
-        review_packet = json.loads(read_exact(tasks.read_request(f.root,run['request_id'])['input_ref']))
-        frozen = json.loads(read_exact(review_packet['facts_ref']))
-        self.assertEqual([p['readback']['status'] for p in frozen['processes']], ['complete_match']*2)
+        packet = tasks.read_request(f.root,run['request_id'])['input_ref']
+        review_packet = json.loads(Path(packet['path']).read_bytes())
+        frozen = json.loads(Path(review_packet['facts_ref']['path']).read_bytes())
+        process, = frozen['processes']
+        self.assertEqual(process['readback']['body_ref'], readback)
         self.assertEqual({ref['sha256'] for ref in review_packet['artifact_refs']},
-                         {ref['sha256'] for ref in packet['artifact_refs']})
+                         {f.ref(Path(path))['sha256'] for path in selected})
         self.assertIn(run['return_ids'][0],
                       fixtures.runtime.read_receipt(f.root,current['latest_receipt'])['result']['collected_review_return_ids'])
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),
-                         'Requires installed DSH; no external model calls')
+    @requires_dsh
     def test_installed_focused_review_receives_original_and_changed_fields_then_lead_adopts(self):
-        import hashlib
         f=self.f
-        original_root=Path(__file__).resolve().parents[1]/('materials/packages/tiangong-package-gap-global-main-20261110/'
-            'apple-scm-reuse-20261110/apple/material-dispatch-20261115/program-38e55011e83b6769/reviews')
         options={}
-        for name,ident in (('original_candidate','5f241439b6f783dbf8db0306058fb7b0'),
-                           ('revised_candidate','3a314bf5d32fb447a04bc298199c5f25')):
-            packet=original_root/('program-review:'+ident)/'packet.json'
-            if not packet.is_file():self.skipTest('Pinned SALTS packet is unavailable')
-            rows=[]
-            for artifact in json.loads(packet.read_bytes())['artifact_refs']:
-                raw=Path(artifact['path']).read_bytes()
-                self.assertEqual(hashlib.sha256(raw).hexdigest(),artifact['sha256'])
-                rows.append(json.loads(raw))
-            path=f.home/(name+'.json');path.write_text(json.dumps({'rows':rows},ensure_ascii=False))
-            options[name]=str(path)
+        for name, document in zip(('original_candidate', 'revised_candidate'), review_data.revision_documents()):
+            path = f.home/(name+'.json')
+            review_data.save(path, document)
+            options[name] = str(path)
         checker=f.home/'verify-delta.py'
         checker.write_text('''import json,sys
 from pathlib import Path
@@ -486,10 +569,7 @@ print('delta-local-check-passed')
 ''')
         with self.installed_host('focused',focused=True,delta_verifier=str(checker),python=sys.executable,**options):
             self.evidence_contract('task','request')
-            tasks.mutate(f.root,'grant-role',f.actor,{'id':'maintainer','actor':f.actor,
-                'org_role':'maintainer','evidence_ref':f.evidence})
-            from dsh_capacity_handoff import provider_pilot
-            provider_pilot(f.root,f.evidence['path'],'htam-offline')
+            self.offline_provider_pilot()
             submitted=f._dispatch()
         self.assertEqual(submitted['outcome'],'succeeded',submitted)
         author=tasks.read_run(f.root,submitted['run_id'])
@@ -518,8 +598,7 @@ print('delta-local-check-passed')
                       'read_delivery_recorded':True,'lead_adopted_engineering_evidence':True,'production_operations':0}
             (Path(directory)/'focused-native-chain.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2)+'\n')
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),
-                         'Requires installed DSH; no external model calls')
+    @requires_dsh
     def test_failed_startup_dependency_returns_not_started_instead_of_hanging(self):
         f = self.f
         with self.installed_host(broken_policy=True):
@@ -542,7 +621,8 @@ print('delta-local-check-passed')
         task = self.cli('work-create', '--brief', str(brief), '--owner', f.actor['id'])
         request = self.cli('work-request', '--task', task['id'], '--brief', str(brief))
         self.evidence_contract(task['id'],request['id'])
-        self.assertEqual(request['summary'], brief.read_text())
+        self.assertLessEqual(len(request['summary']), 240)
+        self.assertEqual(Path(tasks.evidence_ref(f.root, request['input_ref'])['path']).read_bytes(), brief.read_bytes())
         self.assertEqual(self.cli('work-request', '--task', task['id'], '--brief', str(brief))['id'], request['id'])
         config = json.loads(f.config_path.read_text())
         config['roles']['executor'].update(profile='native-workspace', native_policy={
@@ -586,7 +666,8 @@ print('delta-local-check-passed')
         self.assertEqual(len(f.argv_log.read_text().splitlines()), 2)
         current_plan = f.home / 'current-plan.md'
         current_plan.write_text('Use the new dry-mass evidence for the original local delivery. Keep the original author and authorization.')
-        self.cli('work-revise', '--task', task['id'], '--note', str(current_plan))
+        self.cli('work-revise', '--task', task['id'], '--base-sha256', task['plan_ref']['sha256'],
+                 '--note', str(current_plan), '--reason-file', str(hold), '--affected-request', request['id'])
         self.assertEqual(tasks.read_task(f.root, task['id'])['task']['plan_revision'], 2)
         self.assertEqual(tasks.read_request(f.root, request['id'])['plan_revision'], 1)
         instruction = f.home / 'continue.md'
@@ -623,7 +704,7 @@ print('delta-local-check-passed')
             time.sleep(.02)
         self.fail('The isolated native turn did not start')
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),'Installed DSH required')
+    @requires_dsh
     def test_native_pause_preserves_goal_without_an_extra_round(self):
         with self.installed_host('pause'):
             result=self.f._dispatch()
@@ -634,7 +715,7 @@ print('delta-local-check-passed')
             self.assertEqual(observed['roundsStarted'],0)
             self.assertEqual(run['native_identity']['turn_id'],'1')
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),'Installed DSH required')
+    @requires_dsh
     def test_native_shell_failure_is_observation_not_author_restart(self):
         with self.installed_host('shell',network=True):
             result=self.f._dispatch()
@@ -645,7 +726,7 @@ print('delta-local-check-passed')
             self.assertEqual(len(tasks.read_task(self.f.root,'task')['runs']),1)
             self.assertIn('command failed',observed['result'])
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),'Installed DSH required')
+    @requires_dsh
     def test_native_explicit_stop_reaches_original_invocation(self):
         adapters=[];initialize=fixtures.dsh_headless.DeepSeekAdapter.__init__
         def capture(adapter,*args,**kwargs):
@@ -675,7 +756,7 @@ print('delta-local-check-passed')
             self.assertEqual(stopped['native_identity']['id'],original['native_identity']['id'])
             self.assertEqual(len(tasks.read_task(self.f.root,'task')['runs']),1)
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),'Installed DSH required')
+    @requires_dsh
     def test_native_disconnect_keeps_prior_text_and_unknown_invocation(self):
         adapters=[]
         initialize=fixtures.dsh_headless.DeepSeekAdapter.__init__
@@ -695,7 +776,7 @@ print('delta-local-check-passed')
             self.assertEqual(retained['native_session_observation']['native_goal']['phase'],'active')
             self.assertEqual(len(tasks.read_task(self.f.root,'task')['runs']),1)
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),'Installed DSH required')
+    @requires_dsh
     def test_real_unclosed_native_turn_continues_same_session_without_replaying_effect(self):
         import execution_lease
         from harness_package import launch_spec
@@ -747,7 +828,213 @@ print('delta-local-check-passed')
             self.assertEqual(effect.read_text(),'original-effect\n')
             self.assertEqual(json.loads(f.candidate.read_text()),{'basis':'dry','value':4})
 
-    @unittest.skipUnless(Path('/Applications/DeepSeek Harness.app/Contents/Resources/app.asar').is_file(),'Installed DSH required')
+    @requires_dsh
+    def test_only_the_stuck_model_request_times_out_and_releases_the_seat(self):
+        from dsh_capacity import snapshot
+        f = self.f
+        with self.installed_host('hold'):
+            config = json.loads(f.config_path.read_bytes())
+            config['hosts']['dsh']['model_idle_watchdog_seconds'] = 1
+            f.config_path.write_text(json.dumps(config))
+            original = f._dispatch()
+        self.assertEqual(original['outcome'], 'unknown')
+        self.assertEqual(original['transport_diagnostic']['source'], 'original_model_watchdog')
+        run = tasks.read_run(f.root, original['run_id'])
+        phases = [e['payload']['phase'] for e in run['events'] if e['kind'] == 'capacity']
+        self.assertEqual(phases, ['queued','admitted','released'])
+        self.assertEqual(snapshot(f.root)['counts']['occupied']['total'], 0)
+        self.assertEqual(run['native_identity']['turn_id'], '2')
+        self.assertFalse(run['stop_requested'])
+
+    @requires_dsh
+    def test_restarted_recovery_host_reopens_a_dead_managers_native_session_once(self):
+        import select
+        import dsh_capacity as capacity
+        from agent_base import child_environment
+        from dsh_auto_resume import CLAIM, WATCH
+
+        if not hasattr(select, 'kqueue'):
+            self.skipTest('Kernel process-exit notifications are required for this installed-host test')
+        f = self.f
+        self.managed_offline_recovery()
+        host = Path(tasks.__file__).with_name('dsh_recovery_host.py')
+        harness = host.with_name('harness.py')
+        marker = f.home/'original-request-persisted.txt'
+
+        def start_host():
+            log = (f.home/'isolated-supervisor.log').open('ab')
+            self.addCleanup(log.close)
+            proc = subprocess.Popen([sys.executable, str(host), '--root', str(f.root), '--serve'],
+                                    env=child_environment(), stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+            self.addCleanup(stop, proc)
+            return proc
+
+        def stop(proc):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=8)
+
+        with self.installed_host('hold', flush_open_turn_request=str(marker)) as phase:
+            supervisor = start_host()
+            with (f.home/'isolated-manager.log').open('wb') as log:
+                manager = subprocess.Popen([sys.executable, str(harness), '--root', str(f.root),
+                    'work-dispatch', '--request', 'request', '--config', str(f.config_path), '--execute'],
+                    env=dict(os.environ), stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+                self.addCleanup(stop, manager)
+                original = self.wait_native_turn(2)
+                limit = time.monotonic()+7
+                while not marker.exists() and time.monotonic()<limit:
+                    time.sleep(.03)
+                self.assertTrue(marker.exists())
+                original = tasks.read_run(f.root, original['id'])
+                self.assertEqual(len([e for e in original['events'] if e['kind'] == WATCH]), 1)
+                self.assertEqual(capacity.snapshot(f.root)['counts']['occupied']['author'], 1)
+                phase[0] = 'finish_recovery'
+                stop(supervisor)
+                stop(manager)
+                stopped_at = time.time()
+                replacement = start_host()
+                limit = time.monotonic()+22
+                while time.monotonic() < limit:
+                    current = tasks.read_task(f.root, 'task')['runs']
+                    if len(current)==2 and current[-1]['outcome']=='succeeded':
+                        break
+                    if replacement.poll() is not None or len(current)>2:
+                        break
+                    time.sleep(.1)
+                self.assertEqual([r['outcome'] for r in current], ['unknown','succeeded'],
+                                 (current, (f.home/'isolated-supervisor.log').read_text()))
+                attempt = tasks.read_run(f.root, original['id'])
+                claim, = [e for e in attempt['events'] if e['kind'] == CLAIM]
+                self.assertEqual(claim['payload']['next_run_id'], current[-1]['id'])
+                self.assertEqual(current[-1]['native_identity']['id'], original['native_identity']['id'])
+                self.assertEqual(f.candidate.read_text(), 'resumed once')
+                self.assertFalse(capacity._queue(f.root)['entries'])
+                if directory := os.environ.get('HTAM_1014_EVIDENCE'):
+                    source_released, = [e['created_at'] for e in attempt['events'] if e['kind'] == 'capacity'
+                                        and e['payload']['phase'] == 'released']
+                    child = tasks.read_run(f.root, current[-1]['id'])
+                    final = fixtures.runtime.read_receipt(f.root, child['latest_receipt'])['result']
+                    first_action = final['turn_activity']['first_effective_action_at']
+                    released_at = datetime.fromisoformat(source_released).timestamp()
+                    claim_at = datetime.fromisoformat(claim['created_at']).timestamp()
+                    (Path(directory)/'native-recovery-timing.json').write_text(json.dumps({
+                        'disconnect_to_release_seconds': round(released_at-stopped_at, 3),
+                        'release_to_claim_seconds': round(claim_at-released_at, 3),
+                        'claim_to_first_effective_action_seconds':
+                            round(datetime.fromisoformat(first_action).timestamp()-claim_at, 3),
+                        'same_session': True, 'automatic_successors': 1, 'original_effect_writes': 1}, indent=2)+'\n')
+
+    @requires_dsh
+    def test_recovery_collects_a_persisted_terminal_without_a_new_native_action(self):
+        from agent_base import child_environment
+        from dsh_auto_resume import CLAIM
+        from dsh_recovery_host import _watched
+        import select
+
+        if not hasattr(select, 'kqueue'):
+            self.skipTest('Kernel process-exit notifications are required for this installed-host test')
+        f = self.f
+        self.managed_offline_recovery()
+        host = Path(tasks.__file__).with_name('dsh_recovery_host.py')
+        marker = f.home/'native-final-before-management-receipt'
+        manager_script = """
+import sys, threading
+from pathlib import Path
+marker = Path(sys.argv.pop(1))
+sys.path.insert(0, sys.argv.pop(1))
+from agent_runtime import Runtime
+from harness import main
+original = Runtime._record_result
+def interrupt(self, run_id, config, result, *args, **kwargs):
+    if result['native_status'] == 'completed' and result.get('result'):
+        marker.write_text(result['result'])
+        threading.Event().wait()
+    return original(self, run_id, config, result, *args, **kwargs)
+Runtime._record_result = interrupt
+raise SystemExit(main())
+"""
+        with self.installed_host('shell'):
+            manager = subprocess.Popen([sys.executable,'-c',manager_script,str(marker),str(host.parent),
+                '--root',str(f.root),'work-dispatch','--request','request','--config',str(f.config_path),'--execute'],
+                env=dict(os.environ), stdin=subprocess.DEVNULL)
+            try:
+                limit = time.monotonic()+10
+                while not marker.is_file() and manager.poll() is None and time.monotonic() < limit:
+                    time.sleep(.03)
+                self.assertTrue(marker.is_file())
+                original, = tasks.read_task(f.root,'task')['runs']
+                self.assertEqual(original['outcome'], 'running')
+            finally:
+                manager.kill()
+                manager.wait(timeout=8)
+            supervisor = subprocess.Popen([sys.executable,str(host),'--root',str(f.root),'--serve'],
+                env=child_environment(), stdin=subprocess.DEVNULL)
+            try:
+                limit = time.monotonic()+12
+                while _watched(f.root) and supervisor.poll() is None and time.monotonic() < limit:
+                    time.sleep(.04)
+                self.assertFalse(_watched(f.root))
+                recovered, = tasks.read_task(f.root,'task')['runs']
+                recovered = tasks.read_run(f.root, recovered['id'])
+                self.assertEqual(recovered['outcome'], 'succeeded')
+                self.assertEqual(recovered['native_identity'], original['native_identity'])
+                self.assertFalse(any(e['kind'] == CLAIM for e in recovered['events']))
+                result = fixtures.runtime.read_receipt(f.root,recovered['latest_receipt'])['result']
+                self.assertEqual(result['result'], marker.read_text())
+            finally:
+                supervisor.kill()
+                supervisor.wait(timeout=8)
+
+    @requires_dsh
+    def test_owner_grant_edits_the_exact_exhausted_native_goal_and_continues(self):
+        f=self.f
+        with self.installed_host('budget_exhaustion') as phase:
+            seed=f._dispatch()
+            self.assertEqual(seed['outcome'],'succeeded',seed)
+            original=tasks.read_run(f.root,seed['run_id'])
+            before=fixtures.runtime.read_receipt(f.root,original['latest_receipt'])
+            goal=before['result']['native_session_observation']['native_goal']
+            self.assertEqual((goal['phase'],goal['roundsStarted'],goal['maxGoalRounds']),('blocked',40,40))
+            self.assertEqual(goal['blockedReason']['code'],'round-limit')
+            note=f.home/'owner-investment.md'
+            note.write_text('The original owner approves exactly sixteen additional rounds for the same Goal.')
+            command=['work-dispatch','--request','request','--run-id',original['id'],'--config',str(f.config_path),
+                     '--execute','--instructions',str(note),'--goal-max-rounds']
+            def refused(value):
+                result=subprocess.run([sys.executable,str(Path(tasks.__file__).with_name('harness.py')),
+                    '--root',str(f.root),*command,value],capture_output=True,text=True)
+                self.assertNotEqual(result.returncode,0,result.stdout)
+                return json.loads(result.stderr)['error']
+            phase[0]='budget_recovered'
+            self.assertIn('increased total',refused('39'))
+            result=self.cli(*command,'56')
+            self.assertEqual(result['outcome'],'succeeded',result)
+            resumed=tasks.read_run(f.root,result['run_id'])
+            self.assertEqual(resumed['native_identity']['id'],original['native_identity']['id'])
+            retained=fixtures.runtime.read_receipt(f.root,resumed['latest_receipt'])['result']
+            evidence=retained['native_goal_budget']
+            edited,armed=evidence['observations']
+            self.assertEqual((edited['stage'],edited['goal']['revision'],edited['goal']['maxGoalRounds']),
+                             ('edited',goal['revision']+1,56))
+            self.assertEqual((armed['stage'],armed['goal']['revision'],armed['goal']['activation']),
+                             ('resumed',goal['revision']+2,'armed'))
+            end=retained['native_session_observation']['native_goal']
+            self.assertEqual((end['id'],end['maxGoalRounds'],end['phase']),(goal['id'],56,'complete'))
+            self.assertGreaterEqual(int(resumed['native_identity']['turn_id']),int(original['native_identity']['turn_id'])+2)
+            self.assertEqual(f.candidate.read_text(),'Original work after the authorized increase.')
+            self.assertIsNotNone(retained['turn_activity']['first_effective_action_at'])
+            self.assertEqual(self.cli(*command,'56')['run_id'],resumed['id'])
+            self.assertIn('different continuation',refused('55'))
+            self.assertEqual(len(tasks.read_task(f.root,'task')['runs']),2)
+            if destination:=os.environ.get('HTAM_DSH_1122_EVIDENCE'):
+                (Path(destination)/'native-goal-budget.json').write_text(json.dumps({
+                    'original_run':original['id'],'continued_run':resumed['id'],'original_turn':original['native_identity']['turn_id'],
+                    'final_turn':resumed['native_identity']['turn_id'],'before':goal,'budget':evidence,'after':end,
+                    'receipt_sha256':resumed['latest_receipt']['sha256'],'effective_action_at':retained['turn_activity']['first_effective_action_at'],
+                    'same_session':True,'isolated':True},ensure_ascii=False,indent=2)+'\n')
+
+    @requires_dsh
     def test_missing_native_session_is_not_replaced(self):
         with self.installed_host():
             config=fixtures.runtime.load_config(self.f.root,str(self.f.config_path),'executor')

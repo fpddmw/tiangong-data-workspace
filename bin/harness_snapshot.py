@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import shlex
+import sys
 import time
 import harness_tasks as t
 import harness_scope as scope
@@ -13,15 +14,15 @@ ROOT=Path(__file__).resolve().parent.parent
 HOOK_INLINE_BUDGET_BYTES=8192
 DUTIES={
  'global_main':'总主从原建设计划接续，按现实需要和现库覆盖决定下一笔投入。见 roles/global-main.md。',
- 'task_lead':'主审用原生子智能体协助明确制作计划，按整包用途派工、采用成果、安排余项及平台交付。只剩等待时必须一次休眠满 30 分钟。见 roles/task-lead.md。',
+ 'task_lead':'主审在波末或转入纯等待前，用 work-show --mine 对照原委派和已采用成果的用途限制，续派可独立交付的余项。只剩具名依赖时用 work-show --mine --wait-seconds 1800。见 roles/task-lead.md。',
  'executor':'作者在本包边界自主制作、自查、独审返修，达到子终点后交清相邻接口；主审承接父差额。',
  'scientific_reviewer':'独审核准确候选与声明用途，将科学意见原文交作者。',
- 'maintainer':'维护者沿原计划和维护board亲自修共享能力并验证原入口。',
+ 'maintainer':'维护者沿原计划和 board 修共享能力，保护实际动作边界，让负责人在授权内自选方法。见 roles/maintainer.md。',
  'unknown':'读取原职责、完整委派与当前责任，继续承担原目标。'}
 
 
 def command(root,task_id,*,detail=False):
-    return shlex.join([str(Path(root)/'.venv/bin/python'),str(Path(root)/'bin/harness.py'),'--root',str(root),'work-show','--id',task_id]+(['--detail'] if detail else []))
+    return shlex.join([sys.executable,str(Path(root)/'bin/harness.py'),'--root',str(root),'work-show','--id',task_id]+(['--detail'] if detail else []))
 
 
 def _role(c,actor,request=None):
@@ -60,33 +61,139 @@ def _history(c,task_id,limit,offset):
     return {'total':count,'shown':len(rows),'offset':offset,'next_offset':offset+limit if offset+limit<count else None,'events':rows}
 
 
-def task_view(c,root,task_id,*,request_id=None,limit=10,offset=0,detail=False):
-    task=t._decode(t._row(c,'work_tasks',task_id));projected=scope.projection(c,root,task_id)
+def commitment(c,root,task_id,revision,ref=None):
+    row=c.execute("""SELECT id,payload_json FROM work_task_events WHERE task_id=?
+        AND kind IN ('create','revise','reopen') AND plan_revision=? ORDER BY id DESC LIMIT 1""",
+        (task_id,revision)).fetchone()
+    original=json.loads(row['payload_json']) if row else {}
+    baseline=original.get('baseline',{})
+    ref=ref or baseline.get('plan_ref') or original.get('plan_ref')
+    if ref is None and original.get('plan_ref_json'):
+        ref=json.loads(original['plan_ref_json'])
+    try:
+        frozen=t.evidence_ref(root,ref)
+    except (OSError,ValueError):
+        frozen=None
+    return {'version':revision,'source_ref':ref,'frozen_ref':frozen,
+            'event_id':row['id'] if row else None,'reason_ref':baseline.get('reason_ref')}
+
+
+def current_plan_ref(root, binding):
+    """Reference today's navigation at the bound path independently of its accepted revision."""
+    from workspace_files import is_credential_path, sha256_file
+    root = Path(root).resolve()
+    if not binding:
+        return None
+    try:
+        path = (root / binding['path']).resolve(strict=True)
+        if not path.is_relative_to(root) or is_credential_path(path.relative_to(root)) or not path.is_file():
+            return None
+        return {'path': str(path), 'sha256': sha256_file(path)}
+    except (OSError, ValueError):
+        return None
+
+
+def task_view(c,root,task_id,*,request_id=None,limit=10,offset=0,history=False,wave=None,actor=None,scope_id=None):
+    import harness_wave
+    raw=t._row(c,'work_tasks',task_id)
+    task=t._decode(raw)
+    task['summary']=task['summary'][:240]
+    history_command=command(root,task_id)+' --history'
+    if history:
+        page=_history(c,task_id,limit,offset)
+        if page['next_offset'] is not None:
+            page['next_page_command']=history_command+' --limit '+str(limit)+' --offset '+str(page['next_offset'])
+        return {'task_id':task_id,'history':page,'current_command':command(root,task_id)}
+    from workspace_queries.scope_work import material_view
+    original_returns=scope._returns(c,task_id)
+    projected=scope.projection(c,root,task_id,compact=True,returns=original_returns,detail_scope_id=scope_id)
+    if wave:
+        return harness_wave.wave_view(c,root,raw,projected,wave)
+    pending=harness_wave.project(c,root,raw,projected,actor=actor)
+    materials=material_view(c,raw,projected,pending,original_returns,selected=scope_id,limit=limit,offset=offset)
+    if scope_id is not None:
+        return materials
     all_requests=[t._decode(r) for r in c.execute('SELECT * FROM work_requests WHERE task_id=? ORDER BY created_at,id',(task_id,))]
     requests=[q for q in all_requests if q['id']==request_id] if request_id else all_requests[offset:offset+limit]
     ids={q['id'] for q in requests}
-    returns=[r for r in scope._returns(c,task_id) if r['request_id'] in ids]
-    runs=[t._run_view(c,r) for r in c.execute('SELECT r.* FROM work_runs r JOIN work_requests q ON q.id=r.request_id WHERE q.task_id=? ORDER BY r.created_at,r.id',(task_id,)) if r['request_id'] in ids]
-    if not detail:
-        latest={}
-        for run in runs:latest[run['request_id']]=run
-        runs=list(latest.values())
-    decisions=[t._decode(r) for r in t._effective_dispositions(c,task_id)]
-    history=_history(c,task_id,limit if not detail else max(1,c.execute('SELECT count(*) FROM work_task_events WHERE task_id=?',(task_id,)).fetchone()[0]),offset if not detail else 0)
-    if history['next_offset'] is not None:
-        history['next_page_command']=command(root,task_id)+' --limit '+str(limit)+' --offset '+str(history['next_offset'])
+    returns=[r for r in original_returns if r['request_id'] in ids]
+    latest={}
+    for returned in returns:
+        latest[returned['request_id']]=returned
+    runs=[]
+    for request in requests:
+        row=c.execute('SELECT * FROM work_runs WHERE request_id=? ORDER BY created_at DESC,id DESC LIMIT 1',(request['id'],)).fetchone()
+        if row:
+            runs.append(t._run_view(c,row))
+    choices=list(t._effective_dispositions(c,task_id))
+    if request_id:
+        related = {request_id} | {q['id'] for q in all_requests if q['parent_request_id'] == request_id}
+        pending = {**pending, **{k:[i for i in pending[k] if i.get('request_id') in related]
+                                 for k in ('actionable','waiting')}}
+    pending=harness_wave.pending_page(pending,limit,offset)
+    wait_cursor=harness_wave.cursor([task_id],actor,pending['actionable']) if actor else None
+    projected['scope_priority']=harness_wave.priority(c,root,raw,projected['scope_items'])
+    projected.update(materials)
+    if projected['contract']:
+        projected['contract']={key:projected['contract'][key] for key in ('revision','source_ref')}
+    projected['detail_command']='.venv/bin/python bin/harness.py work-scope --task '+shlex.quote(task_id)
     count=1 if request_id else len(all_requests)
-    from review_delivery import projection as review_projection
-    return {'task':task,'scope':projected,'requests':requests,'returns':returns,'runs':runs,'decisions':decisions,
-        'reviews':{q['id']:review_projection(c,root,q) for q in requests if not q['independent']},
+    reviews={}
+    if request_id:
+        from scientific_review.delivery import projection as review_projection
+        reviews={q['id']:review_projection(c,root,q) for q in requests if not q['independent']}
+    progress = {}
+    if request_id:
+        returned_ids = {item['id'] for item in returns}
+        choices = [r for r in choices if r['return_id'] in returned_ids]
+        for request in requests:
+            if request['kind'] != 'plan':
+                continue
+            unit = scope.request_progress(c, request)
+            progress[request['id']] = unit
+            if not request['independent']:
+                from delivery_evidence import handoff_effects
+                delivery_run=next((r for r in runs if r['request_id']==request['id']),None)
+                try:
+                    unit['delivery_effects']=handoff_effects(c,root,request,run=delivery_run,at_original=False)
+                except (OSError,ValueError,KeyError,TypeError) as exc:
+                    unit['delivery_effects']={'state':'original_effect_evidence_unavailable','reason':type(exc).__name__}
+            if len(request['required_scope']) > 1 and unit['remaining_scope']:
+                # A scope still open on one old request may already be handled elsewhere.
+                unit['handoff'] = [
+                    {'scope_id': item['scope_id'], 'task_state': item['state'],
+                     'remaining_in_task': item['remaining'],
+                     'other_author_requests': [q['id'] for q in all_requests if q['kind'] == 'plan'
+                         and not q['independent'] and q['id'] != request['id']
+                         and item['scope_id'] in q['required_scope']]}
+                    for item in projected['scope_items'] if item['scope_id'] in unit['remaining_scope']
+                ]
+    from platform_review.submission import latest_results
+    submissions=latest_results(c,task_id)
+    if request_id:
+        submissions=[r for r in submissions if (r.get('author_request') or r.get('handoff',{}).get('author_request'))==request_id]
+    return {'scope':projected,'task':task,
+        'requests':[{k:q[k] for k in ('id','kind','input_ref','required_scope','recipient_actor','parent_request_id','plan_revision')} for q in requests],
+        'returns':[{k:r[k] for k in ('id','request_id','result_ref','coverage')}
+                   for r in (list(reversed(returns))[offset:offset+limit] if request_id else latest.values())],
+        'runs':[{k:r[k] for k in ('id','request_id','outcome','stop_requested','native_identity','latest_receipt')} for r in runs],
+        'decisions':[{'id':r['id'],'return_id':r['return_id'],'disposition':r['disposition'],
+                      'evidence_ref':json.loads(r['evidence_ref_json'])} for r in choices[-limit:]],
+        'return_count_for_request_page':len(returns),'decision_count':len(choices),
+        'review_submission_count':len(submissions),'review_submissions':submissions[offset:offset+limit],
+        **({'reviews':reviews,'request_progress':progress, 'returns_next_offset':offset+limit if offset+limit<len(returns) else None} if request_id else {}),
+        'pending':pending,'cursor':wait_cursor,
         'pagination':{'total':count,'shown':len(requests),'offset':offset,'next_offset':offset+limit if not request_id and offset+limit<count else None,
             'filter':{'request_id':request_id},'full_scope_total':projected['total']},
-        'history':history,'original_brief':task['original_ref'],'current_plan':task['plan_ref'],
+        'history':{'total':c.execute('SELECT count(*) FROM work_task_events WHERE task_id=?',(task_id,)).fetchone()[0],'command':history_command},
+        'original_brief':task['original_ref'],'current_plan':current_plan_ref(root,task['plan_ref']),
+        'commitment':commitment(c,root,task_id,task['plan_revision'],task['plan_ref']),
+        'wave_command':command(root,task_id)+' --wave',
         'detail_command':command(root,task_id,detail=True),'current_command':command(root,task_id),
-        'meaning':'Current scope is complete. Lists are complete-entry pages; read original conclusions with their conditions before scientific use or authorization.'}
+        'meaning':'current_plan opens the current navigation. commitment.frozen_ref opens the accepted original by hash. Scope and counts come from the original ledger.'}
 
 
-def read(root,*,task_id=None,request_id=None,limit=10,offset=0,detail=False):
+def read(root,*,task_id=None,request_id=None,limit=10,offset=0,detail=False,history=False,wave=None,scope_id=None):
     root=Path(root).resolve()
     if not 1<=limit<=100 or offset<0:raise ValueError('Use limit 1..100 and nonnegative offset.')
     if not (root/'.control/harness.sqlite').is_file():return {'status':'UNCONFIGURED','tasks':[]}
@@ -100,7 +207,10 @@ def read(root,*,task_id=None,request_id=None,limit=10,offset=0,detail=False):
             if task_id and task_id!=request['task_id']:raise ValueError('The selected request belongs to a different task.')
             task_id=request['task_id']
         result={'status':'configured','actor':actor,'roles':sorted(t._roles(c,actor)) if actor else []}
-        if task_id:return {**result,'work':task_view(c,root,task_id,request_id=request_id,limit=limit,offset=offset,detail=detail)}
+        if task_id:
+            work=t._snapshot(c,t._row(c,'work_tasks',task_id)) if detail else task_view(
+                c,root,task_id,request_id=request_id,limit=limit,offset=offset,history=history,wave=wave,actor=actor,scope_id=scope_id)
+            return {**result,'work':work}
         rows=list(c.execute("SELECT * FROM work_tasks WHERE state NOT IN ('completed','cancelled') ORDER BY id"))
         tasks=[{**t._decode(r),'detail_command':command(root,r['id'])} for r in rows[offset:offset+limit]]
         return {**result,'tasks':tasks,'pagination':{'total':len(rows),'shown':len(tasks),'offset':offset,'next_offset':offset+limit if offset+limit<len(rows) else None}}
@@ -136,27 +246,32 @@ def bundle(root,actor=None,*,request_id=None,timeout=1):
             elif all(t.native_key(row['owner_actor'])==t.native_key(actor) for row in tasks):role='task_lead'
         views=[];basis=[]
         for task in tasks:
-            p=scope.projection(c,root,task['id'])
-            # Only ledger facts here: no report scans, auth files or remote calls.
+            p=scope.projection(c,root,task['id'],compact=True)
+            # The card reads the plan references and indexed facts, without scanning reports.
             reqs=[t._decode(q) for q in c.execute('SELECT * FROM work_requests WHERE task_id=? ORDER BY id',(task['id'],))]
             decision_count=c.execute('SELECT count(*) FROM work_dispositions d JOIN work_returns r ON r.id=d.return_id JOIN work_requests q ON q.id=r.request_id WHERE q.task_id=?',(task['id'],)).fetchone()[0]
-            view={'task':t._decode(task),'scope':p,'request_binding':request['id'] if request else None,
+            summary=t._decode(task)
+            summary['summary']=summary['summary'][:240]
+            binding=summary['plan_ref']
+            view={'task':summary,'scope':p,'request_binding':request['id'] if request else None,
                 'request_brief':json.loads(request['input_ref_json']) if request else None,
                 'request_contract':scope.contract(c,'request',request['id']) if request else None,
-                'original_brief':json.loads(task['original_ref_json']),'current_plan':json.loads(task['plan_ref_json']),
+                'original_brief':json.loads(task['original_ref_json']),'current_plan':current_plan_ref(root,binding),
+                'commitment':commitment(c,root,task['id'],task['plan_revision'],binding),
                 'detail_command':command(root,task['id']),
                 'important':{'delegations':len(reqs),'returns':c.execute('SELECT count(*) FROM work_returns r JOIN work_requests q ON q.id=r.request_id WHERE q.task_id=?',(task['id'],)).fetchone()[0],
                     'adoptions':decision_count,'stopped_or_paused_scope':p['filters']['stopped_or_paused']['total'],'unknown_execution_scope':p['filters']['execution_unknown']['total']}}
-            from review_delivery import projection as review_projection
-            reviews=[r for q in reqs if not q['independent'] and (not request or q['id']==request['id']) for r in review_projection(c,root,q)]
-            view['reviews']=list({r['review_id']:r for r in reviews}.values())
+            from scientific_review.delivery import projection as review_projection
+            view['reviews']=([] if request and request['independent'] else
+                             review_projection(c,root,t._decode(request) if request else None,task_id=task['id']))
             view['important']['review_ready']=sum(r['state']=='ready' for r in view['reviews'])
             view['important']['review_delivered']=sum(bool(r['deliveries']) for r in view['reviews'])
             views.append(view);basis.append(_basis(c,task['id']))
         safe=safe_value({'role':role,'tasks':views,'actor':actor,'request_id':request_id,
              'workspace':str(root),'task_count':len(views)})
-        safe['snapshot_hash']=hashlib.sha256(t._json(safe_value([role,request_id,basis])).encode()).hexdigest()
-        safe['fact_revision']=safe['snapshot_hash']
+        safe['fact_revision']=hashlib.sha256(t._json([role,request_id,basis]).encode()).hexdigest()
+        plan_views=[(view['current_plan'],view['commitment']['frozen_ref']) for view in safe['tasks']]
+        safe['snapshot_hash']=hashlib.sha256(t._json([safe['fact_revision'],plan_views]).encode()).hexdigest()
         if time.monotonic()-started>timeout:raise TimeoutError('Local snapshot exceeded one second')
         return safe
 
@@ -186,11 +301,13 @@ def navigation(value):
         for kind,counts in view['scope']['counts'].items():
             dest=totals.setdefault(kind,{'total':0,'remaining':0})
             dest['total']+=counts['total'];dest['remaining']+=counts['remaining']
+    workspace=Path(value.get('workspace') or ROOT)
+    listing=shlex.join([sys.executable,str(workspace/'bin/harness.py'),'--root',str(workspace),'work-list'])
     return ('当前职责：'+value.get('role','unknown')+'。'+DUTIES.get(value.get('role'),DUTIES['unknown'])+'\n'
         +'关联任务总数：'+str(value.get('task_count',0))+'；全量范围与余项：'+json.dumps(totals,ensure_ascii=False)+'。\n'
         +'完整任务基础卡未展开；本卡是预览，未展示不代表没有条件或限制。\n'
-        +'正式工作区：'+str(ROOT)+'\n'
-        +'在该目录读取全部任务：.venv/bin/python bin/harness.py work-list（按 next_offset 遍历，再用 work-show --id 读准确任务）。')
+        +'正式工作区：'+str(workspace)+'\n'
+        +'读取全部任务：'+listing+'（按 next_offset 遍历，再用 work-show --id 读准确任务）。')
 
 
 def render(value,*,budget=HOOK_INLINE_BUDGET_BYTES):
@@ -212,11 +329,14 @@ def render(value,*,budget=HOOK_INLINE_BUDGET_BYTES):
                     '，覆盖待核'+str(filters['coverage_unindexed']['total'])+'（可重叠，不可相加）。')
         base.append('重要事实类别/数量：'+json.dumps(view['important'],ensure_ascii=False)+'；明细按块展开或见详情。')
         base.append(tag+'完整视图/原委派入口：'+view['detail_command'])
+        for label, ref in (('当前接续页', view['current_plan']), ('冻结承诺', view['commitment']['frozen_ref'])):
+            if ref:
+                base.append(tag+label+'：'+ref['path']+' SHA-256 '+ref['sha256'])
         important={'task_state':task['state'],'stopped_or_paused_scope_ids':filters['stopped_or_paused']['scope_ids'],
             'reviews':view.get('reviews',[]),
-            'execution_unknown_scope_ids':filters['execution_unknown']['scope_ids'],'source':view['current_plan'],
+            'execution_unknown_scope_ids':filters['execution_unknown']['scope_ids'],
             'meaning':'停止/未知仅限制准确作用域；不得据此恢复原生产或重放未知数据动作。声明终点不授予远端权限。'}
-        goal={'original_goal':task['summary'],'contract':p['contract'],'original_brief':view['original_brief'],'current_plan':view['current_plan']}
+        goal={'original_goal':task['summary'],'contract':p['contract'],'original_brief':view['original_brief']}
         if view.get('request_binding'):
             goal['bound_request']={'id':view['request_binding'],'original_brief':view.get('request_brief'),
                                    'contract':view.get('request_contract')}
@@ -298,7 +418,7 @@ def _package_native_metadata(root,run):
 
 
 def package_snapshot(root,task_id=None):
-    import harness_finite_work as finite
+    from task_ledger import finite_work as finite
     with contextlib.closing(t._connect(root,True)) as c:
         c.execute('BEGIN');t.ensure_schema(c)
         tasks=list(c.execute('SELECT * FROM work_tasks'+(' WHERE id=?' if task_id else " WHERE state NOT IN ('completed','cancelled')")+' ORDER BY id',(task_id,) if task_id else ()))
@@ -340,7 +460,7 @@ def package_snapshot(root,task_id=None):
                         'stopRequested':bool(run['stop_requested']),'updatedAt':run['updated_at'],'receipt':run['latest_receipt'],
                         'goalObservation':metadata['goalObservation'],'continuationRef':metadata['continuationRef']})
             for group in groups.values():
-                from review_delivery import projection as review_projection
+                from scientific_review.delivery import projection as review_projection
                 group['reviews']=list({r['review_id']:r for qid in group['requestIds'] if not all_requests[qid]['independent']
                     for r in review_projection(c,root,all_requests[qid])}.values())
                 group['returns']=[{'id':r['id'],'requestId':r['request_id'],'createdAt':r['created_at'],'coverage':r['coverage'],

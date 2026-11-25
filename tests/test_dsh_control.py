@@ -1,14 +1,15 @@
 """Actual inherited socket lifecycle; no model, credentials or business runs."""
 import json
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-NODE=ROOT/'.toolchain/node/24.19.0-darwin-arm64/bin/node'
+NODE=shutil.which('node')
 
-@unittest.skipUnless(NODE.exists(), 'local node unavailable')
+@unittest.skipUnless(NODE, 'Requires Node.js for the inherited-socket lifecycle test')
 class ControlTests(unittest.TestCase):
     def test_ack_close_pending_and_check_after_close(self):
         script='''
@@ -24,7 +25,7 @@ console.log('PASS');
 '''
         parent,child=socket.socketpair()
         with parent,child:
-            process=subprocess.Popen([str(NODE),'--input-type=module','-',str(child.fileno())],cwd=ROOT,
+            process=subprocess.Popen([NODE,'--input-type=module','-',str(child.fileno())],cwd=ROOT,
                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,pass_fds=(child.fileno(),))
             child.close()
             process.stdin.write(script);process.stdin.close();process.stdin=None
