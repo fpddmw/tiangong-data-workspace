@@ -1,0 +1,16 @@
+{
+  "note": "Copy to .control/accounts.local.json (or .control/accounts.json, both gitignored) and fill your own TianGong project_ref and user_id values.",
+  "project_ref": "<supabase-project-ref>",
+  "editor": {
+    "user_id": "<your-editor-user-uuid>",
+    "browser_profile": "",
+    "browser_id": "",
+    "session_env": "DATA_EDITOR_SESSION_FILE"
+  },
+  "manager": {
+    "user_id": "<your-manager-user-uuid-optional>",
+    "browser_profile": "",
+    "browser_id": "",
+    "session_env": "DATA_MANAGER_SESSION_FILE"
+  }
+}

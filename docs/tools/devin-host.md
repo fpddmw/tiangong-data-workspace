@@ -1,6 +1,6 @@
 # Devin / SWE-2 本地 worker
 
-负责人从原 `harness.py work-dispatch` 为一个原请求选择配置；原任务、完整范围、合同、成果、独审和返回继续由同一harness保管。CLI 路径以所选宿主配置和本机安装为准。适配器只接受标准SWE-2的high/medium/max精确ID，不使用Flash、Lightning、cloud、隐式最近Session或替代模型。账户资格以当次正式CLI为准，不把目录或配置当登录证明。
+负责人从原 `harness.py work-dispatch` 为一个原请求选择配置；原任务、完整范围、合同、成果、独审和返回继续由同一harness保管。CLI 路径以所选宿主配置和本机安装为准。本次实测 `3000.12.57 (96542e930752)`；官方浏览器登录后，本账号为Devin Teams，模型清单将精确ID `swe-2-high` 标为Free。适配器只接受标准SWE-2的high/medium/max精确ID，不使用Flash、Lightning、cloud、隐式最近Session或替代模型。账户资格以当次正式CLI为准，不把目录或配置当登录证明。
 
 下面的 `DEVIN_RUNTIME` 指本次选择的 Devin 运行配置在当前工作区中的路径。
 
@@ -11,11 +11,11 @@ devin models list --format json
   --config "$DEVIN_RUNTIME" --execute
 ```
 
-该配置的作者与独审都使用独立的SWE-2 Session。恢复时沿用原运行绑定。新建或载入原 Session 时，适配器在发送 prompt 前核对原生配置，需要切换时调用 `session/set_config_option`。标准 Max 的族选择器可返回 `swe-2-high`，推理档位为 `thought_level=max`。有 Speed 控件时核对 `speed=standard`；无此控件时，从本次模型选项核对标准族与同族 Lightning 分列、当前选中标准族。无法区分时，原运行保留具体诊断。
+该配置的作者与独审都使用独立的SWE-2 Session。SCM本次后续作者及Devin独审要求标准Max；已选定原包`devin-swe2-max-runtime-20261117.json`时继续显式使用该配置，也可为新请求选择本目录的 `swe-2-max-worker.json`。不改旧run绑定的High配置。新建或载入原 Session 时，适配器在发送 prompt 前核对原生配置，需要切换时调用 `session/set_config_option`。标准 Max 的族选择器可返回 `swe-2-high`，推理档位为 `thought_level=max`。有 Speed 控件时核对 `speed=standard`；无此控件时，从本次模型选项核对标准族与同族 Lightning 分列、当前选中标准族。无法区分时，原运行保留具体诊断。
 
 Devin 制作与独审各有 6 席，按角色分别先进先出。原派工、原 Session 继续和独审都在启动 ACP 前取席。作者在受控 `review_result` 等意见时让席，意见交回模型前由同一运行排队重新取作者席。用 `.venv/bin/python bin/harness.py work-capacity --host devin` 看占用、排队和等审中的原运行。切换前已启动的运行按原执行租约计入，原进程自然结束。
 
-若原任务选择DSH独审，改选同目录的 `swe-2-dsh-review.json`；Devin作者不占DSH席，DSH独审进入[独审容量池](production-host.md#dsh共享容量)。DSH另有6席worker池，同角色FIFO，总额12。负责人可为本次任务使用更窄的配置。全局 `.control/runtime.json` 的DSH绑定保持原选定值。
+若原任务选择 DSH 独审，用 `--config` 指定本次的 Devin 作者与 DSH 独审配置。Devin 作者不占 DSH 席，DSH 独审进入[独审容量池](production-host.md#dsh共享容量)。本次选择由主审根据任务和已核实的宿主决定。
 
 新宿主不能冒充原DSH Session。为已有业务选择Devin时，主审先读原完整成果、当前范围和有效决定，再通过原 `work-request` 为明确未完成工作登记同任务的新委派并选择本配置；把仍在途、已停止或未知尝试先沿原run查清。原DSH请求和返回保留；不要把带DSH前驱Session的continuation链交给Devin。Devin内的恢复只用精确原run：
 
@@ -29,9 +29,9 @@ Devin 制作与独审各有 6 席，按角色分别先进先出。原派工、�
 
 有原stop时按同一公共入口给 `--instructions 原负责人恢复说明.md --resume-stopped`；普通continue保留停止。管理进程退出、安静或EOF不等于子进程已结束；原执行和各终端/离线工具的OS启动身份及进程组都必须退出，原生Session也须无实际写锁，才可显式接续。未知写入保留原attempt，只读回原效果；重复派发只观察，不重放原输入或重建Session。
 
-`session/load`若有对应的原生拒绝响应且本次没有发出prompt或工具请求，读回显示`failed / not_started`、准确`target_session`及原锁持有者。它没有自动重放授权。负责人解决实际占用后，以拒绝run为`--run-id`显式continue；运行器沿原launch保留同一Session。单纯超时、EOF、prompt后断连或执行子孙未退出仍保留原保护。
+`session/load`若有对应的原生拒绝响应且本次没有发出prompt或工具请求，读回显示`failed / not_started`、准确`target_session`及原锁持有者。它没有自动重放授权。两次旧SCM调用由公共readresult核完整原ACP、原launch和执行退出事实后追加核实，保留原unknown及原响应。负责人解决实际占用后，以拒绝run为`--run-id`显式continue；运行器沿原launch保留同一Session。单纯超时、EOF、prompt后断连或执行子孙未退出仍保留原保护。
 
-正式ACP的`session/close`能由**加载该Session的同一连接**正常释放；正常持有者退出后，隔离同Session已实际以Max恢复。另一个连接不能代关桌面持有的Session。桌面 Session 仍被占用时，由原持有方正常释放，随后检查进程和写锁并按原运行接续。
+正式ACP的`session/close`能由**加载该Session的同一连接**正常释放；正常持有者退出后，隔离同Session已实际以Max恢复。另一个连接不能代关桌面持有的Session。已装桌面端中，工程Session显示Inactive、切走或Archive都未释放PID54306的占用；Archive不是交接办法。没有核实到可选择性正常卸载的桌面菜单。生产`alabaster-pancreas`、`tremendous-melon`只能由原持有方正常结束；若桌面没有选择性释放入口，需用户在其他桌面工作完成后正常退出Devin，再由原主审核无活动子孙、显式接续并回验。维护者不代关应用、不强制接管或删锁。桌面强制打开使用`cognition.ai/force`，本轮未调用、也未核为安全交接。
 
 作者交回后，主审读完整报告、候选/意见适用条件及具体未完依赖，按实际缺口决定同Session继续或执行保存/送审。一次审核get失败只约束该次读取；新submit、Flow保存、退回及正文恢复各查自身原输入、授权与回执。board记录不自动唤醒blocked主审，工程交回不等于业务已恢复。
 
@@ -45,3 +45,4 @@ Devin当前没有已验证的Goal API；一次调用的结束、部分报告与�
 
 每次调用使用独立的Devin配置文件和私有MCP socket，保留官方组织权限，不写全局bypass或workspace trust。作者与独审Hook复用原 `harness_snapshot` 的完整信息块/8KiB呈现预算。实测已观察到UserPromptSubmit/PostToolUse的派生缓存；压缩事件只令缓存失效，下一支持的工具/提示边界重取。真实压缩后模型接收尚未实测，不把配置存在或缓存写成端到端投递确认。
 
+完整资格及原件（保留在各机本地维护回执与历史记录）区分本地自动测试、已安装CLI/模型、隔离任务链和真实业务回验。本次不启动或恢复SCM/Apple生产，不执行真实远端数据写入；长期科学生产持续性、远端写入和真实压缩仍须按原业务入口分别验证。

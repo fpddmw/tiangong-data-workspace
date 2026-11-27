@@ -1,0 +1,31 @@
+{
+  "schema": "data-workspace.agent-runtime-config.v1",
+  "version": "local-template-v1",
+  "programmatic": true,
+  "hosts": {
+    "codex": {
+      "adapter": "codex-app-server",
+      "binary": "codex",
+      "enabled": false
+    }
+  },
+  "providers": {
+    "native": {
+      "codex_model_provider": "SET_EXISTING_PROVIDER_ID"
+    }
+  },
+  "roles": {
+    "executor": {
+      "host": "codex",
+      "provider": "native",
+      "model": "SET_VERIFIED_MODEL_ID",
+      "profile": "read-only-evidence"
+    },
+    "scientific_reviewer": {
+      "host": "codex",
+      "provider": "native",
+      "model": "SET_VERIFIED_MODEL_ID",
+      "profile": "read-only-evidence"
+    }
+  }
+}

@@ -1,0 +1,141 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "data-workspace.calculation-evidence.v1",
+ "title": "Calculation evidence bound to model and demand",
+ "type": "object",
+ "required": [
+  "schema",
+  "model",
+  "demand",
+  "solved",
+  "computed_at"
+ ],
+ "properties": {
+  "schema": {
+   "const": "data-workspace.calculation-evidence.v1"
+  },
+  "model": {
+   "type": "string",
+   "minLength": 3
+  },
+  "demand": {
+   "type": "object",
+   "required": [
+    "functional_unit",
+    "amount",
+    "unit",
+    "impact_method"
+   ],
+   "properties": {
+    "functional_unit": {
+     "type": "string"
+    },
+    "amount": {
+     "type": "number"
+    },
+    "unit": {
+     "type": "string"
+    },
+    "impact_method": {
+     "type": "string"
+    }
+   },
+   "additionalProperties": false
+  },
+  "solved": {
+   "type": "boolean"
+  },
+  "reason": {
+   "type": "string"
+  },
+  "coverage": {
+   "type": "object",
+   "properties": {
+    "cf_present": {
+     "type": "integer"
+    },
+    "cf_missing": {
+     "type": "integer"
+    },
+    "impact_categories": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    }
+   },
+   "additionalProperties": false
+  },
+  "results": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "impact",
+     "value",
+     "unit"
+    ],
+    "properties": {
+     "impact": {
+      "type": "string"
+     },
+     "value": {
+      "type": "number"
+     },
+     "unit": {
+      "type": "string"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "contributors": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "key",
+     "impact",
+     "share"
+    ],
+    "properties": {
+     "key": {
+      "type": "string"
+     },
+     "impact": {
+      "type": "string"
+     },
+     "share": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "anomalies": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "runtime": {
+   "type": "object",
+   "properties": {
+    "engine": {
+     "type": "string"
+    },
+    "version": {
+     "type": "string"
+    }
+   },
+   "additionalProperties": false
+  },
+  "computed_at": {
+   "type": "string",
+   "minLength": 10
+  }
+ },
+ "additionalProperties": false
+}

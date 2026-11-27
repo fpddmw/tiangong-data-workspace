@@ -1,25 +1,109 @@
 ---
 name: source-evidence-dataset-development
-description: Develop or revise evidence-supported TIDAS datasets from source documents, literature, reports, APIs and existing exact datasets; support the original author goal through complete scientific revision.
+description: Orchestrate evidence-driven TianGong TIDAS data creation or update from PDFs, Word files, web pages, URLs, APIs, databases, reports, or scientific literature.
 ---
 
-# Evidence-supported dataset development
+# Source Evidence Dataset Development
 
-The author owns the original package goal: determine scientific scope, gather evidence, create the candidate, check it, request independent scientific review and iterate. Use original task notes and sources directly; a stage return supplies the next decision and does not replace the package's actual completion condition.
+Use this top-level skill when there is no import-ready LCA package and the task must develop or update TIDAS rows from evidence.
 
-Establish the functional unit, boundary, geography, period, intended use and known uncertainties from the brief and evidence. Gather the missing facts that affect the candidate, while advancing independent parts. Record source locations, original quantities/units, transformations and limitations in the original package's ordinary evidence notes. Search results locate sources; field claims need their underlying evidence. Where a critical fact cannot be established, explain the affected conclusion and a feasible next investigation.
+## Managed Foundry tasks
 
-## Research tools
+When the caller supplies a registered public Foundry task and its current result, use this skill as a domain helper. Retrieve and assess source evidence, or prepare the current requested evidence-backed decision or patch input. Keep the supplied workspace, task, actor and account intent. Return newly authored input files through the current public semantic/action contract and let Foundry register and validate them.
 
-Use the installed `tiangong-kb-sci-search` for scientific literature, `tiangong-kb-report-search` for reports, `academic-paper-download` for lawful OA retrieval and `document-granular-decompose` for supported document extraction. They are installed from `tiangong-ai/agent-skills`; current versions and availability are recorded in the workspace installation, not a new per-task registration document. Read the selected Skill and call it through `bin/env_run.py research` with absolute original-package output paths. Credentials remain in the selected service environment. A missing research service affects that channel; public sources and existing local material remain available.
+Use the current task brief and only the applicable registered decisions supplied by the caller. Keep a user's requirement, an AI assumption and each source fact distinct; a user choice does not fill a scientific evidence gap or grant a write. Return a material conflict or missing fact to the ordinary Foundry entry with its effect, supporting evidence and precise question or next investigation. This managed-task guidance does not change the independent evidence and atomic CLI procedure below.
 
-## Author and revise
+Advance the task only through its supplied structured `next_actions`, preserving executable, argv, CWD and binding. Do not run the standalone CLI procedure below inside that task, overwrite registered rows or reports, write `checkpoint.json` yourself, or recreate a task after an uncertain write. Follow the original task's readback/recovery action. Task and account permission remain bound to the existing scope.
 
-1. Fetch `dataset <type> contract`, use bounded search and exact get to decide reuse, and keep existing scientific identities across revisions.
-2. Author canonical content from the evidence. Resolve the reference Flow/property/unit and amount before interpreting exchanges. Distinguish source facts, assumptions and authorized proxies.
-3. Validate each current canonical document with `dataset <type> validate --input content.json --output report.json --json`. Inspect actual validation layers and completeness; use `list-references` and exact get for dependency evidence. Select online reference checks when needed.
-4. For any numerical or boundary change, recompute affected quantities from the same candidate, reconcile meanAmount/resultingAmount/variables, and synchronize the full explanatory paragraphs, existing languages, tables and current report pointers. Review old statements remaining in those paragraphs. CLI validation currently does not prove quantitative or bilingual consistency.
-5. Self-review the complete candidate against the evidence. Send scientifically consequential changes and unresolved questions to the independent reviewer, incorporate the feedback and continue the original goal. Reuse still-valid checks and opinions.
-6. Authorized persistence uses distinct typed create/save and exact readback. The lead reviewer owns package adoption and authorized review submission; the author supplies the precise candidate and handles scientific revisions. Unknown writes continue through their original intent.
+`foundry-tidas-import` is the ordinary entry for starting and continuing managed Foundry work. This helper can consume a supplied task result without requiring another skill directory to be installed. The remaining procedure applies to an independent CLI workflow whose state is outside the managed public task protocol.
 
-For an existing managed Foundry task, keep its supplied workspace, task, account and runtime, and return requested scientific input through its public actions. Its machine contract applies to that task; ordinary local authoring does not create a Foundry task or production queue. The work is complete when the requested scientific deliverable and any authorized handoff are actually met, with evidence, boundaries and remaining external dependencies clearly stated.
+## Boundaries
+
+- This skill coordinates seed intake, evidence retrieval, entity planning, and child skill routing.
+- Do not treat search results as final field evidence. Capture field-level evidence, limitations, and conflicts first.
+- Do not copy external research skills into this repository. Resolve fast-moving evidence skills with `npx skills`.
+- Do not write database rows. Remote write remains a later CLI/Foundry handoff after deterministic gates pass.
+
+## Required Inputs
+
+- Caller-selected working directory, or the supplied workspace for an existing managed Foundry task.
+- Execution seed or a clarification request if the seed is not executable.
+- Target profile/account guard and intended use.
+- Source starting points: files, URLs, reports, APIs, database ids, citations, or a bounded source-discovery request.
+
+## Seed Gate
+
+Before retrieval, record the working brief in ordinary editable notes with:
+
+- object/process/product name;
+- target entity plan;
+- functional intent or declared unknown;
+- geography and time scope or declared unknown;
+- source starting points or source-discovery scope;
+- intended use and quality target;
+- profile/account guard.
+
+If source starting points and source-discovery scope are both absent, stop and ask for clarification.
+
+## Data admission before assessment and persistence
+
+Record source/license permissions, the declared research boundary, geography/time requirements and intended destination with the seed brief. Classify source material, candidate rows and supporting Process, Flow, Source and Model objects as local-only or eligible for the requested remote scope. Carry that disposition through assessment and the final handoff.
+
+When the applicable task policy limits restricted commercial derivatives or ELCD/RER background to local comparison, retain them in local evidence, conversion, validation and calculation comparison. Keep mass-only placeholders local while mandatory scientific evidence remains unresolved. Do not create remote drafts or prepare write authorization for a local-only scope, including support objects derived from it. A China-specific project rule requires evidence for the actual geography of the unit process. Apply the task's geographic admission criteria to the actual unit-process evidence. Resolve unclear permissions or task boundaries before the remote handoff and continue permitted local work.
+
+## Runtime Evidence Skills
+
+For SCI paper or academic journal evidence, resolve the latest external skill:
+
+```bash
+npx skills use https://github.com/tiangong-ai/skills \
+  --skill tiangong-kb-sci-search \
+  --full-depth
+```
+
+`tiangong-kb-sci-search` searches only the `sci` channel. Keep report, patent, standard, official, web, and database evidence as separate channels.
+
+Before using the skill, record its resolved source and outputs in the caller working directory:
+
+```text
+<working-directory>/runtime-skills/runtime-skill-resolution.json
+```
+
+Include the command, source repo, resolved `refs/heads/main` commit, skill name, evidence channel, timestamp, and output artifact paths.
+
+## Workflow
+
+1. Record the brief and source starting points.
+2. Build goal/scope and evidence questions by field.
+3. Retrieve and capture evidence by channel.
+4. Build an evidence dossier:
+   - `evidence/sources.jsonl`
+   - `evidence/chunks.jsonl`
+   - `evidence/field-evidence.jsonl`
+   - `evidence/conflicts.jsonl`
+5. Inspect `dataset <type> contract` for the selected object schema, methodology and ruleset.
+6. Author candidate support, flow, process, and lifecyclemodel rows only from captured evidence or explicit proxy/waiver records.
+7. Validate each canonical document with `dataset <type> validate --input content.json`; read actual layers and perform evidence-led semantic review.
+8. Use caller notes to track evidence gaps and candidate files; exact search/get/list-references support reuse decisions.
+9. Route semantic blockers to child skills such as `flow-governance-review`, `process-automated-builder`, or Foundry authoring tasks.
+10. Hand off each reviewed candidate for explicit create/save, then separate review submission when authorized. Confirm exact readback; unknown writes use original-intent recovery.
+
+Use the installed `tiangong-lca` or the environment's configured `run-cli.mjs` entry. Resolve file parameters to absolute paths from the intended caller directory before an outer controlled host changes CWD. The shared launcher forwards arguments and preserves the caller's CWD. Local extraction, conversion and validation have no Skill-added remote auth or identity-receipt preflight.
+
+Before any remote account read or write in steps 8-10, run `tiangong-lca auth status --json`; before commit, require `tiangong-lca auth doctor-auth --json`. A `login-required` result is a human handoff to `auth login` in a trusted terminal. Never request a username, password, credential, authorization code, token, or legacy API key. Keep a separate private session per account/project/client; headless tokens may come only from an approved orchestrator and never enter argv or artifacts.
+
+## Stop Rules
+
+Stop when:
+
+- seed is not executable;
+- critical field evidence is absent or conflicting and no scoped proxy/waiver is allowed;
+- runtime evidence skill resolution is missing for SCI retrieval;
+- a row would require invented units, amounts, locations, years, sources, or classifications;
+- required validation or evidence review fails with no supported correction;
+- a remote write lacks explicit authorization, native preconditions or original-intent recovery.
+
+## Done Criteria
+
+- The requested brief, evidence dossier, candidate content, actual validation and semantic review are complete; any authorized write has confirmed readback or an explicit unresolved recovery state.
+- Every authored field points to evidence, profile policy, remote reuse decision, or explicit waiver.

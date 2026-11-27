@@ -3,7 +3,7 @@
 > 本页是迁入正式目录的后续维护版本；原文与已绑定历史回执保留原位。迁移不产生新的科学审核、运行成功或业务操作许可。
 > [原始版本](../../work/control/dataset-lifecycle/CONTRACT.md)；来源 SHA-256：`97b7f16d23818609ea81662d2396f6baa51f226620f3233200a6bc7aa32426cf`。
 
-Current governance revision: 2026-10-07. Before content revision, draft-version selection, review submission, or Model/resulting-Process work, load `python3 bin/context.py --role <role> --policy-key data_lifecycle` and verify its bound originals. This contract supplements P1–P5 and the [2026-10-01 state/group constraints](../../work/control/dataset-lifecycle/authorization-20261001.json). Normal production and historical public-data correction use the same workflow below. This revision defines their routing; it grants no permission to edit a published/review-state object, reject a review, withdraw, publish, delete or run a new remote calculation.
+Current governance revision: 2026-11-24. Before content revision, draft-version selection, review submission, or Model/resulting-Process work, load `python3 bin/context.py --role <role> --policy-key data_lifecycle` and verify its bound originals. This contract supplements P1–P5, the [2026-10-01 state/group constraints](../../work/control/dataset-lifecycle/authorization-20261001.json), and the [2026-11-24 single-active-version-line rule](../../work/control/dataset-lifecycle/authorization-20261124.json). Normal production and historical public-data correction use the same workflow below. This revision defines their routing; it grants no permission to edit a published/review-state object, reject a review, withdraw, publish, delete or run a new remote calculation.
 
 ## State and fixed draft identity
 
@@ -19,6 +19,19 @@ For a known object family, resolve the latest applicable editable owner-`0` vers
 A new version is for an actual published-data revision when no suitable editable draft exists, not for every save, calculation, review finding or unknown-result retry. New identity still needs suitability/deduplication evidence. Preserve actual native version allocation and dependent-reference closure; do not predict a version or clone a review-state row to escape its gate.
 
 Keep historical authorizations and receipts unchanged. A historical exception, a database credential or this governance discussion alone is not a current admission. Verify the exact operation's present authority, unconsumed scope and native capability; do not replay an old grant or infer permission for other objects.
+
+## Single active version line per UUID (2026-11-24)
+
+Per [authorization-20261124.json](../../work/control/dataset-lifecycle/authorization-20261124.json), authoring, scientific revision, gap accounting and TianGong 2.0 release baselines follow **one active version line per dataset UUID** (aligned with Worker `latest-per-id` selection):
+
+| UUID version constellation | Active working target | Treatment of older / other versions |
+| --- | --- | --- |
+| Published (`state_code = 100`) only, no newer `0/20` successor | Latest published version (`max_st100`) only | Older `st=100` rows remain read-only in DB for explicit Model/dataset references, public URLs and provenance; do not revise or physically delete them here. |
+| Published (`st=100`) plus newer editor successor (`ed_ver > max_st100`, `st=0` or `st=20`) | Latest editor successor only (`st=20` awaits its existing review; `st=0` receives any needed scientific edits) | Do not duplicate repairs on the older `st=100` row. **Never promote an unverified `st=0` successor directly to `100`** — it must pass scientific review and quality gates before superseding `max_st100`; if unqualified or paused, leave it at `0` so public consumers safely keep `max_st100`. |
+| Superseded editor draft (`ed_ver < max_st100`) or older duplicate editor draft (`ed_ver < max_ed_ver`) | None (obsolete) | Exclude from active revision, gap lists and publication; never submit an older draft to `100`. |
+| Net-new UUID (no `st=100`) | Latest editor `0/20` version only | Ignore older self-duplicate drafts; advance through normal review and quality gates before `100`. |
+
+This latest-version focus governs `data-workspace` authoring and release baselines only. Any database-level physical deletion or shared-object retirement (handled outside ordinary authoring under explicit deletion authority) must still verify **zero references across all tables, all historical versions, all states and all accounts**.
 
 ## Historical correction within the same workflow
 

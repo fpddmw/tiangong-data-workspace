@@ -1,7 +1,9 @@
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -12,6 +14,12 @@ BIN = Path(__file__).resolve().parents[1] / 'bin'
 SPEC = importlib.util.spec_from_file_location('tested_env_run', BIN / 'env_run.py')
 env_run = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(env_run)
+with patch.object(sys, 'path', [str(BIN), *sys.path]):
+    import agent_runtime
+    import harness_hook
+    from harness_hosts import installed_program
+    import lca_gate
+    from workspace_queries.discovery import capabilities
 
 
 class SkillCliEnvironmentTests(unittest.TestCase):
@@ -79,6 +87,86 @@ class SkillCliEnvironmentTests(unittest.TestCase):
             (self.root/self.spec[missing]).unlink(missing_ok=True)
             argv,env,cwd=self.bind([name,'--help'])
             self.assertEqual(subprocess.check_output(argv,env=env,cwd=cwd,text=True).strip(),'selected tool executed')
+
+    def test_managed_cli_and_hook_use_preferred_binding_then_legacy(self):
+        shutil.copytree(BIN, self.root / 'bin', ignore=shutil.ignore_patterns('__pycache__'))
+        control = self.root / '.control'
+        local = control / 'runtime.local.json'
+        legacy = control / 'runtime.json'
+        bindings = (local, legacy)
+        for path in bindings:
+            fake_cli = self.root / (path.stem + '-cli.py')
+            fake_cli.write_text('import json, sys\nfrom pathlib import Path\nprint(json.dumps([Path(__file__).stem, *sys.argv[1:]]))\n')
+            worker = control / (path.stem + '-worker.json')
+            worker.write_text('{}')
+            path.write_text(json.dumps({
+                'node': sys.executable,
+                'cli': fake_cli.name,
+                'programmatic_worker': {'path': str(worker.relative_to(self.root))},
+            }))
+
+        # First reproduce a clean machine, then add the previous binding and remove the preferred one.
+        previous = legacy.read_bytes()
+        legacy.unlink()
+        cases = ('local_only', 'both', 'legacy_only')
+        for case in cases:
+            with self.subTest(case=case):
+                if case == 'both':
+                    legacy.write_bytes(previous)
+                if case == 'legacy_only':
+                    local.unlink()
+                selected = legacy if case == 'legacy_only' else local
+                env = {**self.env, 'HTAM_DELIVERY_ROOT': str(self.root), 'HTAM_DELIVERY_RUN_ID': 'fixture-run'}
+                _, tool_env, cwd = env_run.skill_cli_environment(self.root, self.argv, env)
+                self.assertEqual(tool_env['TIANGONG_LCA_CLI_COMMAND'], str(BIN / 'native_cli_capture.py'))
+                delegate = self.root / 'bin/native_cli_capture.py'
+                result = subprocess.check_output(
+                    [sys.executable, str(delegate), '--version', selected.stem],
+                    env=tool_env, cwd=cwd, text=True, timeout=10)
+                self.assertEqual(json.loads(result), [selected.stem + '-cli', '--version', selected.stem])
+                self.assertEqual(harness_hook.runtime_binding(self.root, {})['config_sha256'],
+                                 hashlib.sha256(selected.read_bytes()).hexdigest())
+                self.assertEqual(installed_program(self.root)['path'],
+                                 str(control / (selected.stem + '-worker.json')))
+                native_cli = next(row for row in capabilities(self.root, manifest={}, limit=20)['items']
+                                  if row['id'] == 'native-cli')
+                self.assertEqual(native_cli['runtime_binding'], str(selected.relative_to(self.root)))
+
+    def test_invalid_preferred_binding_does_not_silently_use_legacy(self):
+        (self.root / '.control/runtime.local.json').write_text('{')
+        with self.assertRaises(json.JSONDecodeError):
+            self.bind(['tiangong-lca', '--version'])
+        with self.assertRaises(json.JSONDecodeError):
+            installed_program(self.root)
+
+    def test_cached_doctor_detects_change_from_legacy_to_local(self):
+        receipt = self.root / lca_gate.DOCTOR_RECEIPT
+        receipt.parent.mkdir(parents=True)
+        old = self.root / '.control/runtime.json'
+        receipt.write_text(json.dumps({
+            'schema': lca_gate.DOCTOR_SCHEMA,
+            'candidate_entry_sha256': lca_gate.fingerprint([None, None]),
+            'runtime': {'config_sha256': hashlib.sha256(old.read_bytes()).hexdigest()},
+        }))
+        self.assertEqual(lca_gate.local_doctor(self.root, refresh=False)['cache_status'], 'last_observed')
+        (self.root / '.control/runtime.local.json').write_text(json.dumps({'cli': 'new-cli'}))
+        self.assertEqual(lca_gate.local_doctor(self.root, refresh=False)['cache_status'], 'binding_changed')
+
+    def test_copied_worker_template_loads_both_roles_without_enabling_host(self):
+        control = self.root / '.control'
+        worker = control / 'programmatic-worker.local.json'
+        template = BIN.parent / '.control/programmatic-worker.template.json'
+        shutil.copyfile(template, worker)
+        local = self.spec | {'programmatic_worker': {'path': str(worker.relative_to(self.root))}}
+        (control / 'runtime.local.json').write_text(json.dumps(local))
+        path = installed_program(self.root)['path']
+        for role in ('executor', 'scientific_reviewer'):
+            with self.subTest(role=role), patch.object(sys, 'path', [str(BIN), *sys.path]):
+                config = agent_runtime.load_config(self.root, path, role)
+                self.assertTrue(config['programmatic'])
+                self.assertEqual(config['profile'], 'read-only-evidence')
+                with self.assertRaisesRegex(agent_runtime.CapabilityUnavailable, 'disabled'):
+                    agent_runtime.adapter_for(self.root, config)
 
     def test_credential_filter_preserves_only_selected_role(self):
         values={'DATA_EDITOR_SESSION_FILE':'editor-session','DATA_MANAGER_SESSION_FILE':'manager-session',

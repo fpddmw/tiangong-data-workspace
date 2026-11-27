@@ -1,6 +1,10 @@
 """Identity and observation shapes for the built-in managed adapters."""
 
 from dataclasses import dataclass
+import hashlib
+from pathlib import Path
+
+from env_run import load_runtime_config
 
 
 @dataclass(frozen=True)
@@ -85,14 +89,10 @@ class NativeStartRejected(Exception):
 
 
 def installed_program(root):
-    from pathlib import Path
-    import json
-    import hashlib
-    path = Path(root) / '.control/runtime.json'
-    if not path.is_file():
-        return None
-    binding = json.loads(path.read_bytes()).get('programmatic_worker')
+    root_path = Path(root)
+    spec, _ = load_runtime_config(root_path, required=False)
+    binding = spec.get('programmatic_worker') if spec is not None else None
     if binding is None:
         return None
-    selected = Path(root) / binding['path']
+    selected = root_path / binding['path']
     return {'path': str(selected), 'sha256': hashlib.sha256(selected.read_bytes()).hexdigest()}

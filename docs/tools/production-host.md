@@ -4,7 +4,7 @@
 
 ## 启动和观察
 
-新包从 `.control/runtime.json` 的 `programmatic_worker` 选择已安装配置，明确的 `--config` 可指定本次配置。已有运行保留当时配置作为历史；下一次明确接续选择当前配置，保留原 Session 和宿主账号。本次配置决定实际模型、工具与明确写域，brief 的目录不授予文件权限。所有 agent 使用工作区根目录，启动和接续输入列出 AGENTS、职责、当前任务计划、原 brief 及所选原件路径，由 agent 直接读取；历史brief与本次有效目标的关系由agent据原文判断。
+新包从[本机运行配置](../../installation/README.md#配置受管派工)的 `programmatic_worker` 选择已安装配置，明确的 `--config` 可指定本次配置。已有运行保留当时配置作为历史；下一次明确接续选择当前配置，保留原 Session 和宿主账号。本次配置决定实际模型、工具与明确写域，brief 的目录不授予文件权限。所有 agent 使用工作区根目录，启动和接续输入列出 AGENTS、职责、当前任务计划、原 brief 及所选原件路径，由 agent 直接读取；历史brief与本次有效目标的关系由agent据原文判断。
 
 ```sh
 .venv/bin/python bin/harness.py work-dispatch --request ID --execute
@@ -46,7 +46,7 @@ DSH 按原运行的模型请求许可推进。原生重试退避时显示 `waiti
 
 已加载四席旧代码的原进程继续使用原管理器。旧作者完成受控等待并排队重取时，新管理器先放行更早的票据，暂缓后到的票据，直到旧作者按原总额4和原全局FIFO取席。`legacy_reentry_draining`表示等待这次过渡。原管理器、执行组、原生writer及工具后代均已退出的等待票据由新管理器回收，原运行结果、停止和数据效果仍沿各自证据。已有管理器仍加载旧接入代码时，维护者可按明确授权执行 `work-capacity --retire-exited-waits --source FILE`，并用 `--dry-run` 先核范围。此动作只释放已证明无执行者的等待票据。`policy`显示当前采用策略，`protocol_policy`显示实际协议标记。最后一张旧票据退出后，原容量锁内退役旧标记。
 
-另有过往的四席 provider 试验入口。该队列策略和本机自动接续开关独立。 [切换、排空与回验](../../installation/maintenance-20261116-noon/continuation-handoff/implementation/dsh-workflow-20261119/README.md#复跑与原队列切换)
+另有过往的四席 provider 试验入口。该队列策略和本机自动接续开关独立（历史切换与排空过程日志留存各机本机目录）。
 
 原run的`readresult`／`--read-result`及作者`review_result`也直接显示同一队列的`queued`和等待原因。首次启动排队尚无native Session，同Session恢复排队沿原目标Session保留请求。若排队进程已退出，且原排队事件、配置、输入与原执行证据共同证明从未放行，读回显示 `abandoned_before_start`、原序号和原负责人续行命令。负责人明确对该原run执行 `--execute --continue` 后，原intent以原序号、配置、输入及目标Session进入原队列。证据不足时仍显示 `launch_unresolved`，沿原启动证据查证。新独审继承原作者请求在账本中当前已明确的范围关联，冻结候选和问题保持原件。
 
@@ -99,7 +99,7 @@ DSH共同动态context在恢复首轮和实际压缩后提供当前phase/activat
 
 `work-show/work-packages`和短Hook共用原独审可取事实，`review_result`完整返回才另记实际接收Session及原意见hash；路径提示不等于投递，投递不代替作者处理或主审采用。公共CLI完整证据留原run目录，可信宿主补关联；worker无需写管理库。自动留档失败不改变命令退出结果，也不重放数据动作；`work-return --artifact FILE`沿同一证据集合补原件。
 
-DSH 工程诊断时可在选定宿主配置给 `sse_diagnostic_origin` 指定原 provider 的准确 origin。选定调用的 SDK 实际报告 SSE JSON 解码错误时，宿主在原 run 的 `diagnostics` 保存脱敏完整失败事件及边界摘要。诊断中的正常事件仅保留计数和摘要。原 Session 工具记录继续用于区分原生调用与助手字面文本。[安装版验证和观察边界](../../installation/maintenance-20261116-noon/continuation-handoff/implementation/board-capabilities-20261117/E-isolated-return.md)
+DSH 工程诊断时可在选定宿主配置给 `sse_diagnostic_origin` 指定原 provider 的准确 origin。选定调用的 SDK 实际报告 SSE JSON 解码错误时，宿主在原 run 的 `diagnostics` 保存脱敏完整失败事件及边界摘要。诊断中的正常事件仅保留计数和摘要。原 Session 工具记录继续用于区分原生调用与助手字面文本。
 
 原请求计时带客户端发出的 `traceparent`、收到的服务端标识、首末响应字节时间及本地流空闲异常或上游错误事件摘要。运营方可按同一标识对照代理入口与上游出口的字节和停流时序。原响应正文和授权头由各自原有权限保管。
 

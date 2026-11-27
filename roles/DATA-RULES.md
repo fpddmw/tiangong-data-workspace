@@ -8,6 +8,9 @@
 <a id="按对象现状选择状态路线"></a>
 [按对象现状选择状态路线](../docs/data/rules.md#按对象现状选择状态路线)
 
+<a id="database-admission"></a>
+[入库硬边界（Database admission）](../docs/data/rules.md#database-admission)
+
 <a id="让字段保留科学含义"></a>
 [让字段保留科学含义](../docs/data/rules.md#让字段保留科学含义)
 

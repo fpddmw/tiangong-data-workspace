@@ -26,7 +26,8 @@ SCAN_OVERLAP_BYTES = 64 * 1024
 REVIEWED_FILES_PATH = "docs/workspace/gitlab-reviewed-files.json"
 REVIEWED_FILES_SCHEMA = "data-workspace.gitlab-reviewed-files.v1"
 CONTROL_FILES = {
-    "agent.json", "policy.json", "accounts.json", "roles.json", "runtime.json",
+    "agent.json", "policy.json", "accounts.template.json", "roles.json",
+    "runtime.template.json", "programmatic-worker.template.json",
     "storage.json", "sources.json", "engineering.json",
     "README.md", "HISTORY.md", "MIGRATION.md",
 }
@@ -40,7 +41,7 @@ LOCAL_PARTS = {
 SKILL_ENV_TEMPLATE = ".agents/skills/document-granular-decompose/assets/config.example.env"
 SKILL_REQUIREMENTS_LOCK = ".agents/skills/academic-paper-download/requirements.lock"
 LOCAL_ROOTS = {"tmp"}
-LOCAL_FILES = {".runtime.initialize.json"}
+LOCAL_FILES = {".runtime.initialize.json", "runtime-installation.json", "runtime-installation.local.json"}
 PRIVATE_FILE_NAMES = {"session.json", "sessions.json", "private-session.json", "credentials.json", "oauth.json", "auth.json",
                       "connections.local.json", "worker-local-connection.json"}
 DEPENDENCY_LOCK_FILES = {"Cargo.lock", "yarn.lock", "uv.lock", "poetry.lock", "Pipfile.lock", "bun.lock"}
@@ -160,11 +161,11 @@ def reviewed_environment_template(relative):
             and not any(part == ".env" or part.startswith(".env.") for part in parts[:-1]))
 
 
-def forbidden_path(relative, reviewed_template=False):
+def forbidden_path(relative, reviewed_template=False, bundled_skill=False):
     parts = PurePosixPath(relative).parts
     if not parts or relative.startswith("/") or ".." in parts or ".git" in parts:
         return "invalid-path"
-    if relative != SKILL_ENV_TEMPLATE and any(part.endswith(".env") for part in parts):
+    if any(part.endswith(".env") for part in parts) and not (bundled_skill and relative == SKILL_ENV_TEMPLATE):
         return "environment-file"
     if any(part == ".env" or part.startswith(".env.") for part in parts):
         if relative != ".env.example" and not (reviewed_template and reviewed_environment_template(relative)):
@@ -172,7 +173,7 @@ def forbidden_path(relative, reviewed_template=False):
     if ".control" in parts:
         if relative not in CONTROL_ORIGINALS and (len(parts) != 2 or parts[0] != ".control" or parts[1] not in CONTROL_FILES):
             return "local-state"
-    local_parts = parts[1:] if len(parts) > 2 and parts[:2] == (".agents", "skills") else parts
+    local_parts = parts[1:] if bundled_skill else parts
     if any(part in LOCAL_PARTS for part in local_parts) or parts[0] in LOCAL_ROOTS or relative in LOCAL_FILES:
         return "local-state"
     directories = parts[:-1]
@@ -194,7 +195,7 @@ def forbidden_path(relative, reviewed_template=False):
         return "local-state"
     if any(part.lower() in PRIVATE_FILE_NAMES
            or (NATIVE_SUFFIX.search(part) and part not in DEPENDENCY_LOCK_FILES
-               and relative != SKILL_REQUIREMENTS_LOCK)
+               and not (bundled_skill and relative == SKILL_REQUIREMENTS_LOCK))
            or part.lower().endswith((".pem", ".key")) for part in parts):
         return "local-state"
     return None
@@ -368,7 +369,7 @@ def load_reviewed_files(root, selected, tracked):
         return {}, "reviewed-manifest-invalid"
 
 
-def inspect_candidate(relative, root, candidates, selected, lfs, reviewed, ignored_tracked):
+def inspect_candidate(relative, root, candidates, selected, lfs, reviewed, ignored_tracked, bundled_skills):
     """Inspect one path; the parent retains all enumeration and admission work."""
     issues = []
     total_bytes = 0
@@ -383,7 +384,9 @@ def inspect_candidate(relative, root, candidates, selected, lfs, reviewed, ignor
         issue(relative, "tracked-but-ignored")
     review = reviewed.get(relative)
     approved_codes = set(review["allow"]) if review else set()
-    forbidden = forbidden_path(relative, reviewed_template="environment-file" in approved_codes)
+    skill_hash = bundled_skills.get(relative)
+    forbidden = forbidden_path(relative, reviewed_template="environment-file" in approved_codes,
+                               bundled_skill=skill_hash is not None)
     if forbidden:
         issue(relative, forbidden)
         return total_bytes, issues  # Never open environment secrets or native runtime state.
@@ -410,20 +413,12 @@ def inspect_candidate(relative, root, candidates, selected, lfs, reviewed, ignor
             if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
                 issue(relative, "file-changed-during-check")
                 return total_bytes, issues
-            if relative in {".env.example", SKILL_ENV_TEMPLATE}:
+            if relative == ".env.example":
                 template = candidate.read(MAX_FILE_BYTES + 1)
-                if relative == SKILL_ENV_TEMPLATE:
-                    template = template.replace(
-                        b"UNSTRUCTURED_AUTH_TOKEN=replace_with_fastapi_bearer_token",
-                        b"UNSTRUCTURED_AUTH_TOKEN=",
-                    ).replace(
-                        b"UNSTRUCTURED_API_BASE_URL=https://your-unstructured-host:7770",
-                        b"UNSTRUCTURED_API_BASE_URL=",
-                    )
                 if not empty_environment_template(template):
                     issue(relative, "nonempty-environment-template")
                 candidate.seek(0)
-            digest = hashlib.sha256() if review else None
+            digest = hashlib.sha256() if review or skill_hash else None
             findings, bytes_read = scan_secrets(candidate, digest)
             finished = os.fstat(candidate.fileno())
             if (finished.st_size != bytes_read or finished.st_size != opened.st_size
@@ -432,6 +427,8 @@ def inspect_candidate(relative, root, candidates, selected, lfs, reviewed, ignor
     except (OSError, RuntimeError):
         issue(relative, "file-unavailable")
         return total_bytes, issues
+    if skill_hash and digest.hexdigest() != skill_hash:
+        issue(relative, "bundled-skill-hash-mismatch")
     if review and digest.hexdigest() != review["sha256"]:
         issue(relative, "reviewed-file-mismatch")
         approved_codes = set()
@@ -445,9 +442,9 @@ def inspect_candidate(relative, root, candidates, selected, lfs, reviewed, ignor
 _WORKER_STATE = None
 
 
-def initialize_inspection_worker(root, candidates, selected, lfs, reviewed, ignored_tracked):
+def initialize_inspection_worker(root, candidates, selected, lfs, reviewed, ignored_tracked, bundled_skills):
     global _WORKER_STATE
-    _WORKER_STATE = (root, candidates, selected, lfs, reviewed, ignored_tracked)
+    _WORKER_STATE = (root, candidates, selected, lfs, reviewed, ignored_tracked, bundled_skills)
 
 
 def inspect_worker_candidate(relative):
@@ -465,7 +462,15 @@ def inspect(root, include_files=False, workers=1):
     reviewed, manifest_problem = load_reviewed_files(root, selected, tracked)
     if manifest_problem:
         issues.append({"path": REVIEWED_FILES_PATH, "code": manifest_problem})
-    state = (root, candidates, selected, lfs, reviewed, ignored_tracked)
+    bundled_skills = {}
+    if "skills-lock.json" in tracked and (root / "skills-lock.json").is_file():
+        from check_skill_lock import locked_files
+        try:
+            bundled_skills = {path: entry["sha256"] for path, entry in locked_files(root)
+                              if path in tracked}
+        except (OSError, ValueError, KeyError, TypeError):
+            issues.append({"path": "skills-lock.json", "code": "invalid-skill-lock"})
+    state = (root, candidates, selected, lfs, reviewed, ignored_tracked, bundled_skills)
 
     def collect(results):
         nonlocal total_bytes

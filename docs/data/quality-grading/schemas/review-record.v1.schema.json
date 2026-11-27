@@ -1,0 +1,247 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "data-workspace.review-record.v1",
+ "title": "Independent review record (AI or human)",
+ "type": "object",
+ "required": [
+  "schema",
+  "key",
+  "content_hash",
+  "rubric",
+  "reviewer",
+  "gates",
+  "dqr",
+  "verdict",
+  "gaps",
+  "reviewed_at"
+ ],
+ "properties": {
+  "schema": {
+   "const": "data-workspace.review-record.v1"
+  },
+  "key": {
+   "type": "string",
+   "pattern": "^(processes|flows|lifecyclemodels|sources):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@[0-9]{2}\\.[0-9]{2}\\.[0-9]{3}$"
+  },
+  "content_hash": {
+   "type": "string",
+   "minLength": 16
+  },
+  "rubric": {
+   "type": "object",
+   "required": [
+    "id",
+    "version"
+   ],
+   "properties": {
+    "id": {
+     "const": "ilcd-dqr"
+    },
+    "version": {
+     "type": "string"
+    }
+   },
+   "additionalProperties": false
+  },
+  "reviewer": {
+   "type": "object",
+   "required": [
+    "kind",
+    "id",
+    "context"
+   ],
+   "properties": {
+    "kind": {
+     "enum": [
+      "ai",
+      "human"
+     ]
+    },
+    "id": {
+     "type": "string"
+    },
+    "skill_version": {
+     "type": "string"
+    },
+    "context": {
+     "type": "string"
+    },
+    "contact_ref": {
+     "type": "string"
+    }
+   },
+   "additionalProperties": false
+  },
+  "gates": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "gate",
+     "recomputed"
+    ],
+    "properties": {
+     "gate": {
+      "enum": [
+       "A04",
+       "A06",
+       "A07"
+      ]
+     },
+     "author_claim": {
+      "enum": [
+       "pass",
+       "fail",
+       "not_applicable",
+       "not_run",
+       null
+      ]
+     },
+     "recomputed": {
+      "enum": [
+       "pass",
+       "fail",
+       "not_applicable",
+       "not_run",
+       "insufficient_evidence"
+      ]
+     },
+     "diff": {
+      "type": "boolean"
+     },
+     "report_ref": {
+      "type": "string"
+     },
+     "classification": {
+      "enum": [
+       "author_defect",
+       "runtime_conflict",
+       "tool_gap",
+       "not_assessed"
+      ]
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "dqr": {
+   "type": "object",
+   "required": [
+    "technological",
+    "time",
+    "geographical",
+    "completeness",
+    "precision",
+    "methodological",
+    "overall",
+    "coverage",
+    "evidence"
+   ],
+   "properties": {
+    "technological": {
+     "$ref": "#/$defs/level"
+    },
+    "time": {
+     "$ref": "#/$defs/level"
+    },
+    "geographical": {
+     "$ref": "#/$defs/level"
+    },
+    "completeness": {
+     "$ref": "#/$defs/level"
+    },
+    "precision": {
+     "$ref": "#/$defs/level"
+    },
+    "methodological": {
+     "$ref": "#/$defs/level"
+    },
+    "overall": {
+     "$ref": "#/$defs/level"
+    },
+    "coverage": {
+     "type": "string",
+     "pattern": "^[0-7]/7$"
+    },
+    "evidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "required": [
+       "dimension",
+       "tier",
+       "pointer"
+      ],
+      "properties": {
+       "dimension": {
+        "enum": [
+         "technological",
+         "time",
+         "geographical",
+         "completeness",
+         "precision",
+         "methodological",
+         "overall"
+        ]
+       },
+       "tier": {
+        "enum": [
+         "M",
+         "C",
+         "L",
+         "E",
+         "P",
+         "U"
+        ]
+       },
+       "pointer": {
+        "type": "string"
+       }
+      },
+      "additionalProperties": false
+     }
+    }
+   },
+   "additionalProperties": false
+  },
+  "verdict": {
+   "enum": [
+    "accept",
+    "accept_with_conditions",
+    "return",
+    "undetermined"
+   ]
+  },
+  "gaps": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "reviewed_at": {
+   "type": "string",
+   "minLength": 10
+  },
+  "inputs_sha256": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  }
+ },
+ "additionalProperties": false,
+ "$defs": {
+  "level": {
+   "enum": [
+    "Very good",
+    "Good",
+    "Fair",
+    "Poor",
+    "Very poor",
+    "Not evaluated / unknown",
+    "Not applicable",
+    null
+   ]
+  }
+ }
+}

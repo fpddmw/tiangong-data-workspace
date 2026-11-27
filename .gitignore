@@ -3,4 +3,11 @@
 !.env.example
 .venv/
 __pycache__/
-.control/
+.control/*
+!.control/accounts.template.json
+!.control/runtime.template.json
+!.control/programmatic-worker.template.json
+.runtime/
+.toolchain/
+.harness-local/
+runtime-installation*.json

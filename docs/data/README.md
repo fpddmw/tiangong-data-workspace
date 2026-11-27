@@ -4,16 +4,17 @@
 
 研制和评审数据时读[已批准的 v3 正文](../../work/control/data-principles/PRINCIPLES-v3.md)。[本版批准](../../work/control/data-principles/authorization-v3-20261030.json)给出该正文的位置与哈希。复核旧任务时，从[历版原件](../../work/control/data-principles/README.md)找当时的批准和正文。
 
-在工作区执行 `.venv/bin/python bin/context.py --role data --principles`，可取得当前绑定的正文路径、哈希和授权来源。
+在工作区执行 `python3 bin/context.py --role data --principles`，可取得当前绑定的正文路径、哈希和授权来源；执行 `--policy-key data_admission` 与 `--policy-key data_lifecycle` 可分别加载当前入库硬边界与单活跃版本主线规则。
 
 ## 按工作找方法
 
-- [科学数据规则](rules.md)适用于从原委派研制、修订和审阅候选。
+- [科学数据规则](rules.md)适用于从原委派研制、修订和审阅候选（含[入库硬边界](rules.md#database-admission)）。
 - [远端动作的权限与恢复](authority.md)说明按对象和账号核哪些授权。
-
-- [数据生命周期与 Model 派生](dataset-lifecycle.md)：状态、固定草稿版本、成组生成/保存。
+- [数据生命周期与 Model 派生](dataset-lifecycle.md)：状态、单 UUID 最新活跃版本主线、固定草稿版本、成组生成/保存。
 - [分类选取](classification.md)：分类体系、主活动与写前复核；工具能力仍按实际运行时验证。
 - [名称编写](naming.md)：保留已授权本地试行与正式 methodology 的区别；不将试行冒充已发布标准。
+- [数据质量分级](data-quality-grading-design.md)：三阶段（authoring / review / calculation）、五轴（生命周期 / 主张阶梯 / 质量剖面 / 计算状态 / 用途判定）与 AI+人类双评审展示；**设计提案 0.2，未部署**，不改变现有门禁。
+- [质量分级合同](quality-grading/README.md)：`gate-claims` / `review-record` / `calculation-evidence` v1 三份机器合同与一条 state 20 样例；**提案配套，未部署**。
 - [完整候选准备](../../workflows/dataset-review/candidate-preparation.md)：字段/引用/单位与方法学命名。
-- [Process年度量与说明字段](process-platform-fields.md)：构造年度字段、迁移双语用途限制或回验Platform保存时读取；计划只引用原包证据。
+- [Process年度量与说明字段](process-platform-fields.md)：构造年度字段、迁移双语用途限制或回验 Platform 保存时读取；计划只引用原包证据。
 - [完整 Process 工作流](../../workflows/dataset-review/README.md)：研制、返修、依赖、保存与送审边界。

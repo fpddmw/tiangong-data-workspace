@@ -560,7 +560,7 @@ def programmatic(root, request_id, *, config_path=None, status=False, read_resul
         installed = installed_program(root)
         if not installed:
             raise runtime.CapabilityUnavailable(
-                'No qualified programmatic worker is selected in .control/runtime.json (programmatic_worker).')
+                'Set programmatic_worker in .control/runtime.local.json or select a host with --config.')
         config_path = installed['path']
     config = runtime.load_config(root, config_path, 'scientific_reviewer' if request['independent'] else request['recipient_role'])
     if not config['programmatic']:

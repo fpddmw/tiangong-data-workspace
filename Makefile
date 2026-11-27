@@ -1,6 +1,6 @@
 PYTHON ?= python3
 REPOSITORY_WORKERS ?= 4
-PUBLIC_TESTS := test_repository test_harness_tasks test_agent_review test_review_revision test_harness_decisions
+PUBLIC_TESTS := test_repository test_harness_tasks test_agent_review test_review_revision test_harness_decisions test_env_run test_setup_local
 
 .PHONY: check inventory test skills
 

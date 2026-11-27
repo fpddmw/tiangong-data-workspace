@@ -99,7 +99,8 @@ def editor_preflight(root, config, capabilities):
             or not launch.is_file() or not (root / '.env').is_file()):
         return None
     try:
-        accounts = json.loads((root / '.control/accounts.json').read_text())
+        from env_run import load_accounts_config
+        accounts, _ = load_accounts_config(root)
         command = [sys.executable, str(launch), '--role', 'editor', 'cli',
                                   'auth', 'identity-receipt', '--expected-project-ref', accounts['project_ref'],
                                   '--expected-user-id', accounts['editor']['user_id'], '--json']

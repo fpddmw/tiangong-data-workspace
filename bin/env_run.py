@@ -47,7 +47,7 @@ def role_env(role,values,root=None):
   key='DATA_EDITOR_SESSION_FILE' if role=='editor' else 'DATA_MANAGER_SESSION_FILE'
   if not values.get(key):raise ValueError(f'Missing {key}')
   out.update(TIANGONG_LCA_AUTH_MODE='oauth',TIANGONG_LCA_SESSION_FILE=values[key])
-  accounts=json.loads((root/'.control/accounts.json').read_text())
+  accounts,_=load_accounts_config(root)
   out.update(TIANGONG_LCA_EXPECTED_PROJECT_REF=accounts['project_ref'],
              TIANGONG_LCA_EXPECTED_USER_ID=accounts[role]['user_id'])
  if role=='research':
@@ -71,9 +71,43 @@ def tool_cwd(root):
   raise ValueError('Tool work directory must not contain a nested .env')
  return cwd
 
+def runtime_config_path(root):
+    """Select the machine binding, with the legacy name as a fallback."""
+    control = Path(root).resolve() / '.control'
+    local = control / 'runtime.local.json'
+    legacy = control / 'runtime.json'
+    return legacy if not local.is_file() and legacy.is_file() else local
+
+def load_runtime_config(root, *, required=True):
+    path = runtime_config_path(root)
+    if not path.is_file():
+        if not required:
+            return None, path
+        raise ValueError('Missing local runtime config: copy .control/runtime.template.json to .control/runtime.local.json (or .control/runtime.json)')
+    return json.loads(path.read_text(encoding='utf-8')), path
+
+def accounts_config_path(root):
+ root=Path(root).resolve()
+ local=root/'.control/accounts.local.json'
+ return local if local.is_file() else root/'.control/accounts.json'
+
+def load_accounts_config(root):
+ path=accounts_config_path(root)
+ if not path.is_file():
+  raise ValueError('Missing local accounts config: copy .control/accounts.template.json to .control/accounts.local.json (or .control/accounts.json)')
+ return json.loads(path.read_text(encoding='utf-8')),path
+
+def external_material_path(root,name):
+ spec,_=load_runtime_config(root)
+ materials=spec.get('external_materials')
+ if not isinstance(materials,dict) or not materials.get(name):
+  raise ValueError(f'External material "{name}" is not configured in local runtime config (external_materials)')
+ raw=Path(materials[name]).expanduser()
+ return raw if raw.is_absolute() else (Path(root).resolve()/raw)
+
 def tool_environment(root,env):
  """Expose configured commands; only the invoked command needs to be installed."""
- root=Path(root).resolve();spec=json.loads((root/'.control/runtime.json').read_text())
+ root=Path(root).resolve();spec,_=load_runtime_config(root)
  selected=dict(env)
  paths=[]
  if spec.get('node'):
@@ -89,8 +123,9 @@ def skill_cli_environment(root,argv,env):
  """Use one installed command for direct CLI calls and ordinary skill scripts."""
  root=Path(root).resolve();skills=(root/'.agents/skills').resolve()
  if argv and Path(argv[0]).name in ('tiangong-lca','tiangong-ai'):
-  spec=json.loads((root/'.control/runtime.json').read_text())
+  spec,_=load_runtime_config(root)
   key='cli' if Path(argv[0]).name=='tiangong-lca' else 'ai_cli'
+  if not spec.get(key):raise ValueError(f'{key} is not configured in local runtime config')
   return [str(root/spec['node']),str(root/spec[key]),*argv[1:]],tool_environment(root,env),tool_cwd(root)
  if len(argv)<2 or argv[1].startswith('-'):
   return argv,env,root
@@ -103,7 +138,8 @@ def skill_cli_environment(root,argv,env):
  selected=tool_environment(root,env)
  interpreter=argv[0]
  if Path(interpreter).name in ('node','node.exe'):
-  interpreter=str(root/json.loads((root/'.control/runtime.json').read_text())['node'])
+  spec,_=load_runtime_config(root)
+  interpreter=str(root/spec['node'])
  return [interpreter,str(script),*argv[2:]],selected,tool_cwd(root)
 
 def main():
@@ -122,7 +158,7 @@ def main():
    raise ValueError('--without-project-env requires a bound ordinary research skill')
   with tempfile.TemporaryDirectory(prefix='tiangong-local-skill-') as home:
    env['HOME']=home
-   if len(argv)>=2 and Path(argv[1]).resolve()==(ROOT/json.loads((ROOT/'.control/runtime.json').read_text())['cli']).resolve():
+   if len(argv)>=2 and Path(argv[1]).resolve()==(ROOT/load_runtime_config(ROOT)[0]['cli']).resolve():
     from delivery_evidence import execute_native
     raise SystemExit(execute_native(ROOT,argv[:2],argv[2:],env=env,cwd=cwd))
    raise SystemExit(subprocess.call(argv,env=env,cwd=cwd))

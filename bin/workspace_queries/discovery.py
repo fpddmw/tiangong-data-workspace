@@ -7,6 +7,8 @@ import re
 import shlex
 import sqlite3
 
+from env_run import runtime_config_path
+
 
 def terms(query):
     return re.findall(r'[a-z0-9_-]+|[\u4e00-\u9fff]+', (query or '').casefold())
@@ -274,7 +276,8 @@ def capabilities(root, *, query=None, manifest=None, limit=5, offset=0):
          'instruction': 'Use the current authorized browser/plugin read surface and the original review scope. The CLI adapter does not create browser capability or a login.'},
         {'id': 'native-cli', 'kind': 'cli', 'purpose': 'Skill 调用失败和工具排障，核实际运行时绑定、安装和 CLI。过程 流 数据集 单位 换算 检索 计算 process flow dataset unit convert',
          'entry': 'docs/tools/data-cli.md', 'availability': 'runtime_check_required',
-         'command': 'python3 bin/lca_gate.py --doctor', 'runtime_binding': '.control/runtime.json'}])
+         'command': 'python3 bin/lca_gate.py --doctor',
+         'runtime_binding': runtime_config_path(root).relative_to(root).as_posix()}])
     ranked = []
     for item in candidates:
         # Installed paths and the shared Skill instruction are capability metadata,

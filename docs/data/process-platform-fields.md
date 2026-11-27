@@ -39,7 +39,7 @@
 
 平台候选已将 `useAdviceForDataSet` 的保存路径改为与表单和读取相同的 `dataSourcesTreatmentAndRepresentativeness`。新候选直接使用规范字段；不再以搬到方法字段来规避序列化缺陷。已有原包迁移过的科学内容保留原件和映射，由原作者根据当前用途处理，不由工具自动搬回或删除。
 
-2026-11-17，现役页面的 Data Check 已观察到隐式保存及遗漏 `useAdviceForDataSet`、分配、方法内容。其线上构建与已修源码的对应关系待核。RHA 个案原 `40900 t/year` 在 kg 参考单位界面产生了 `40900 kg`，恢复用等值 `40900000 kg/year`。核年度数字、单位与期间的等值关系，并核完整读回。上游部署后由维护者先验实际保存边界和无损往返，再交原负责人核自己的准确草稿。代码、证据、候选和不用该表单写入的工作可按原计划继续。[上线原件与当前回验](../../installation/maintenance-20261116-noon/continuation-handoff/implementation/board-capabilities-20261117/G-platform-return.md) · [平台往返补证](https://github.com/tiangong-lca/platform/issues/432#issuecomment-6958247521) · [Data Check 动作边界](https://github.com/tiangong-lca/platform/issues/1528)
+2026-11-17，现役页面的 Data Check 已观察到隐式保存及遗漏 `useAdviceForDataSet`、分配、方法内容。其线上构建与已修源码的对应关系待核。RHA 个案原 `40900 t/year` 在 kg 参考单位界面产生了 `40900 kg`，恢复用等值 `40900000 kg/year`。核年度数字、单位与期间的等值关系，并核完整读回。上游部署后由维护者先验实际保存边界和无损往返，再交原负责人核自己的准确草稿。代码、证据、候选和不用该表单写入的工作可按原计划继续（历史过程回验留存 Git/本机维护日志）。[平台往返补证](https://github.com/tiangong-lca/platform/issues/432#issuecomment-6958247521) · [Data Check 动作边界](https://github.com/tiangong-lca/platform/issues/1528)
 
 CLI 0.4.1 可接受空的 `common:referenceToCommissioner` 数组，现役页面对同一候选要求实际委托方。作者按原材料和已绑定规则填写真实 Contact，主审核所属用途的送审要求。公开规则的差异沿上游处理。[CLI #518](https://github.com/tiangong-lca/cli/issues/518)
 
@@ -54,6 +54,6 @@ CLI 0.4.1 可接受空的 `common:referenceToCommissioner` 数组，现役页面
 - 使用所选原生入口构造完整候选，运行适用 SDK/CLI 四层检查，原包独审按完整差异检查年度数值含义与全部限制。
 - 在原 owner 获准的保存／检查回验中，比较完整读回：年度数字、参考单位链与期间含义相符；所有原双语说明在所选稳定字段完整保留；交换数量、方向、精确 Flow 引用、分配、参考绑定及 Model 关系保持原目标要求。黏土反例中，20 项交换和年度／用途方法字段须分别验证。
 - 接受有证据的时间戳、固定详情地址和引用说明变化，保留前后绑定并逐层读原生报告。
-- 当前直接/Skill CLI 已删除 `annual_supply_or_production_volume_not_annualized` 的年度关键词推断。原生校验核字段格式，科学独审核年度量依据。平台修订已删除派生后缀、截断和 Process 隐式翻译；线上生效以[本次部署与回验记录](../../installation/update-20261113-shared-capabilities/aluminum-repair/README.md)为准。旧平台的失败读回保留为证据，由维护处理部署，作者继续原包可独立推进的工作。
+- 当前直接/Skill CLI 已删除 `annual_supply_or_production_volume_not_annualized` 的年度关键词推断。原生校验核字段格式，科学独审核年度量依据。平台修订已删除派生后缀、截断和 Process 隐式翻译；线上生效以实际部署与本机回验记录为准。旧平台的失败读回保留为证据，由维护处理部署，作者继续原包可独立推进的工作。
 
 参考：[本次黏土保存反例](https://github.com/tiangong-lca/platform/issues/432#issuecomment-6524543748)、[固定年度后缀源码](https://github.com/tiangong-lca/platform/blob/80233595de60b0f6207e3306eef8ce566451d05f/src/services/processes/annualSupplyOrProductionVolume.ts#L385)、[用途映射源码](https://github.com/tiangong-lca/platform/blob/80233595de60b0f6207e3306eef8ce566451d05f/src/services/processes/util.ts#L461)。具体数据写入、工具修复、部署和发布沿原任务及明确范围执行。

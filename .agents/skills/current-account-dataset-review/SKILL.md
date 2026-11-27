@@ -9,7 +9,7 @@ Choose exact object types and scope before reading. Use `dataset <type> list --s
 
 1. Fetch the current type contract and validate canonical content with `dataset <type> validate --input content.json`.
 2. Inspect outgoing references with `list-references`; use exact typed `get` for referenced data. Existence, visibility and relationship validity are separate facts.
-3. For an agreed repair, edit a local candidate or apply an explicit `patch` request, inspect `diff` and validate again. For quantitative revisions, recompute affected quantities from that candidate and synchronize the full affected explanation, existing languages and report pointers; review residual statements from the prior boundary, not just the edited line. Never silently advance references to latest.
+3. For an agreed repair, edit a local candidate or apply an explicit `patch` request, inspect `diff` and validate again. Never silently advance references to latest.
 4. Save an existing draft with an explicit `save` request containing its before-content and intended actor/environment; independently read back the exact target. Creation needs its own `create` intention. Model graphs use `dataset model graph --input graph-request.json`, whose input contains `{ "content": <canonical Model> }`.
 5. Submit or resubmit through `review` only when requested. Reviewer decisions are separate from validation or authoring.
 
@@ -23,6 +23,8 @@ Read the shared result envelope and actual `completeness`, validation layers and
 
 ## CLI selection
 
-Call `tiangong-lca` directly. Read the needed command’s `--help --json` before constructing inputs. Optional Node wrappers use the same PATH command; `--cli-command <executable>` selects a custom path. If unavailable, follow the official CLI installation guidance. Existing managed tasks continue through their owner-returned actions.
+Call `tiangong-lca` directly or the environment's configured `run-cli.mjs` entry. Read the needed command’s `--help --json` before constructing inputs. Optional Node wrappers use the same PATH command; `--cli-command <executable>` selects a custom path. If unavailable, follow the official CLI installation guidance. Existing managed tasks continue through their owner-returned actions.
 
 If `tiangong-lca` is unavailable, follow its official installation instructions. Source development and controlled runtime settings are optional environment choices; ordinary use requires no identity file or digest.
+
+Resolve input, output and descriptor paths from the intended caller directory before an outer controlled host changes CWD, then pass absolute paths as individual argv values. The shared launcher preserves the caller CWD and forwards arguments unchanged. Local validation and content processing have no Skill-added remote auth or identity-receipt preflight. Preserve the exact CWD supplied by an existing managed task action.

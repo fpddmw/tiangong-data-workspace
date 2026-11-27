@@ -24,7 +24,7 @@
   --id UUID --version EXACT_VERSION --output /ABS/CONTACT.json --json
 ```
 
-普通 Skill 无需另交安装资格文件。安装信息在 `.control/runtime.json`，Skill 文件来源在 `skills-lock.json`。`--without-project-env` 只用于本地研究检查；正常账号继续使用原 session。旧任务账本保留在 `.harness-local/cli-state`；当前原生写入账本位于 `~/.local/state/tiangong-lca/dataset-operations` 和 `review-operations`，宿主仅为 executor 开放这些准确目录，不扩大到凭据目录。受控 `tiangong_cli` 以 editor 调用 `dataset model result-group` 时，另开放同级 `model-result-groups` 给正式 CLI 写入及读回成组保存的恢复文件。原 Foundry Task 继续使用自己的 manifest、runtime、attempt 和公共动作，`launch.py foundry` 保有原绑定。DSH Session／Goal 不因本次 CLI 升级重建。
+普通 Skill 无需另交安装资格文件。工具路径由[本机运行配置](../../installation/README.md)选择，Skill 文件来源见 `skills-lock.json`。`--without-project-env` 只用于本地研究检查；正常账号继续使用原 session。旧任务账本保留在 `.harness-local/cli-state`；当前原生写入账本位于 `~/.local/state/tiangong-lca/dataset-operations` 和 `review-operations`，宿主仅为 executor 开放这些准确目录，不扩大到凭据目录。受控 `tiangong_cli` 以 editor 调用 `dataset model result-group` 时，另开放同级 `model-result-groups` 给正式 CLI 写入及读回成组保存的恢复文件。原 Foundry Task 继续使用自己的 manifest、runtime、attempt 和公共动作，`launch.py foundry` 保有原绑定。DSH Session／Goal 不因本次 CLI 升级重建。
 
 ## 从原件自主制作与修订
 
@@ -45,9 +45,9 @@
 
 0.4.0 的 Process business 检查新增交换引用名称核对。离线调用通过 `--reference-documents /ABS/REFERENCES.json` 提供 `{ "documents": [...] }` 内的精确 Flow 正文；原候选报告的 `--reference-rows-file`／`--support-rows` 也可传同批支撑。报告区分缺证据的 `unresolved` 与名称不符的具体路径，作者对照选定 Flow 的完整名称处理当前候选。原成果和旧报告保留其实际覆盖，工具版本变化本身不撤销科学采用。
 
-Process 精确读取用 `dataset process get`。CLI 0.4.1 的回执在 `data.subject.model_id/model_version` 给出持久关联，LS 原件实读到准确 Model 与版本，A09 独立草稿实读两个 null。历史回执缺字段时保留当时的读取范围。[原件复验](../../installation/maintenance-20261116-noon/cli-0.4.1-20261117/model-skill-owner-revalidation.json)
+Process 精确读取用 `dataset process get`。CLI 0.4.1 的回执在 `data.subject.model_id/model_version` 给出持久关联，LS 原件实读到准确 Model 与版本，A09 独立草稿实读两个 null。历史回执缺字段时保留当时的读取范围（详见[安装摘要](../../installation/README.md)）。
 
-Model 本地生成用 `dataset model build-resulting-process`，按原请求读取 `bundle.projected_processes` 的准确成员。CLI 0.4.1 在 LS 原请求保留了全部 27 项交换、Model 自述、用途和权利；生成说明另有追加。已保存结果组用 `dataset model result-group` 的 `action: inspect` 读取原 Model 和成员快照。现行 `lifecyclemodel-resulting-process-builder` 的 `--result-group` 入口已在准确线上版本验证只读 inspect。整组保存、恢复与送审沿各自授权和回执。[原件复验](../../installation/maintenance-20261116-noon/cli-0.4.1-20261117/model-skill-owner-revalidation.json)
+Model 本地生成用 `dataset model build-resulting-process`，按原请求读取 `bundle.projected_processes` 的准确成员。CLI 0.4.1 在 LS 原请求保留了全部 27 项交换、Model 自述、用途和权利；生成说明另有追加。已保存结果组用 `dataset model result-group` 的 `action: inspect` 读取原 Model 和成员快照。现行 `lifecyclemodel-resulting-process-builder` 的 `--result-group` 入口已在准确线上版本验证只读 inspect。整组保存、恢复与送审沿各自授权和回执。
 
 0.4.0 的本地 Model 请求可在原 `semantic_context.flow_documents` 提供精确 Flow 正文，用于生成和核对交换名称；`process_sources.allow_remote_lookup` 为真时允许公共入口精确读取 Process 和 Flow。选择本地或在线依据原任务条件。原 LS 请求仍输出相同27条交换事实，但缺少 Flow 证据时资格明确为 `unresolved`，这不抹去已有结果或授权重新计算远端数据。
 

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 
+from env_run import runtime_config_path
 import harness_tasks as tasks
 from task_ledger import sessions
 
@@ -161,8 +162,8 @@ def runtime_binding(root, event):
     binding = dict(UNKNOWN_RUNTIME)
     # This identifies the configured launch binding. Actual installed tool
     # version remains unknown unless the original event carries it explicitly.
-    path = root / '.control' / 'runtime.json'
     try:
+        path = runtime_config_path(root)
         if (not path.is_symlink() and path.resolve().is_relative_to(root.resolve())
                 and path.is_file() and path.stat().st_size <= 1024 * 1024):
             binding['config_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()

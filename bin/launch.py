@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from env_run import read_env, role_env, tool_environment, tool_cwd
+from env_run import load_runtime_config, read_env, role_env, tool_environment, tool_cwd
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -24,13 +24,20 @@ def main():
     if args.surface == 'utilities':
         from utilities_tools import run
         raise SystemExit(run(ROOT, argv))
-    spec = json.loads((ROOT / '.control/runtime.json').read_text())
+    spec, _ = load_runtime_config(ROOT)
     cwd = tool_cwd(ROOT)
     envfile = ROOT / '.env'
     env = role_env(args.role, read_env(envfile) if envfile.exists() else {}, ROOT)
     env = tool_environment(ROOT, env)
-    key = {'cli': 'cli', 'ai': 'ai_cli', 'foundry': 'foundry_runtime_cli'}[args.surface]
-    node, cli = ROOT / spec['node'], ROOT / spec[key]
+    if args.surface == 'cli':
+        cli_rel = spec.get('cli')
+    elif args.surface == 'ai':
+        cli_rel = spec.get('ai_cli')
+    else:
+        cli_rel = spec.get('foundry_runtime_cli') or spec.get('cli')
+    if not cli_rel:
+        raise ValueError(f'{args.surface} executable is not configured in local runtime config')
+    node, cli = ROOT / spec['node'], ROOT / cli_rel
     command = [str(node), str(cli)]
     if args.surface == 'foundry':
         manifest = ROOT / spec['manifest']

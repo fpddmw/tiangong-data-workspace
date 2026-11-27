@@ -8,7 +8,7 @@ Agent 按当前问题选择并读取完整方法、案例和证据，判断其�
 
 ## 原案例
 
-- 宁国铸造的两种年度量来自不同的设计口径。按原源表与数量链判断各自适用范围，复用已有的单位化影响核对。[两个年量的来源](</home/fpddmw/projects/htam/materials/packages/lca-todo-discovery-20261030/v2-native-validation-20261108/README.md#两个年量的来源>)
+- 宁国铸造的两种年度量来自不同的设计口径。按原源表与数量链判断各自适用范围，复用已有的单位化影响核对。[两个年量的来源](../../materials/packages/lca-todo-discovery-20261030/v2-native-validation-20261108/README.md#两个年量的来源)
 - HyInHeat 的工段代理投入、覆盖边界和说明与正文的差异有完整原件。按实际工段核对来源与入账，保留原审结论及条件。 同一回放保留文件 SHA-256 和载荷 SHA-256 的实际比对。[原件只读回放](../../materials/packages/lca-todo-discovery-20261030/v2-native-validation-20261108/hyinheat-original-readback.json)
 
-- 广美 CO₂ 修订中，交换值更新后原量账仍显示早先数值。沿原复盘核实际影响和恢复点。[苹果执行复盘第 2 节](</home/fpddmw/projects/htam/workspaces/lca/apple-recycled-materials/runs/2026-10-30-todo-handoff/execution-efficiency-review-20261106.md#2-目标已有基础与实际增量>)
+- 广美 CO₂ 修订中，交换值更新后原量账仍显示早先数值。沿原复盘核实际影响和恢复点。沿原苹果任务查《执行效率复盘》（`execution-efficiency-review-20261106.md`）第 2 节，原件未随共享工作区分发。

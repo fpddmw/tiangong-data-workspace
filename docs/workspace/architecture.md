@@ -19,7 +19,7 @@
 
 ## 2026-11-22 对现役入口的核查
 
-本节保存改造前的观察。现行行为和返修后的复跑见[工程回交](../../installation/maintenance-20261121-board/coordination-refactor-20261122/README.md)。四项隔离反例均用本仓库的原 CLI 或批次预演，每次使用临时任务库。它们界定需要调整的位置，本节不改变冻结承诺和运行权限。
+本节保存改造前的观察。现行行为与设计依据见[协作重构计划](../../reports/workspace/2026-11-22-harness-coordination-refactor.md)。四项隔离反例均用本仓库的原 CLI 或批次预演，每次使用临时任务库。它们界定需要调整的位置，本节不改变冻结承诺和运行权限。
 
 | 入口 | 实际观察 | 应怎样调整，怎样验 |
 | --- | --- | --- |
@@ -30,7 +30,7 @@
 
 另有一处调度风险。`guard_reserve` 会把任一尚未映射优先级的余项计入储备关闭条件，只影响首次启动已标为储备的请求。建议让主审复用冻结承诺里的核心范围和开启条件，判断该余项是否影响本次储备。真实核心仍可推进、储备超出预算或开启条件不明时，保留原限制。这里有源码依据，尚无此条件造成生产延误的证据。[储备准入](../../bin/harness_wave.py)
 
-此前升级中，冻结与当前页分离、已读回件仍待办、普通独审原文计轮及写后未知效果沿原操作恢复，均有对应反例和离线回验，值得保留。W2 加隔离用例证明工程行为。整波无人催办、实际交付周期与科学返修质量，留到获准复产后一起观察。[原反例与独立复核](../../installation/maintenance-20261121-board/wave-offline-repair-maintainer-20261122.md) · [批次、锁与恢复](../../installation/maintenance-20261121-board/wave-execution-20261122.md)
+此前升级中，冻结与当前页分离、已读回件仍待办、普通独审原文计轮及写后未知效果沿原操作恢复，均有对应反例和离线回验，值得保留。W2 加隔离用例证明工程行为。整波无人催办、实际交付周期与科学返修质量，留到获准复产后一起观察（详见[波次执行设计评审](../../reports/workspace/2026-11-22-wave-execution-design-review.md)）。
 
 ## 日常接口
 
@@ -57,10 +57,10 @@
 
 | 工作 | 实际入口 | 实现及仍直接使用它的调用方 |
 | --- | --- | --- |
-| 委派、范围、采用、接续 | `harness.py`、`run_worker.py`、`context.py` | [任务账本](../../bin/task_ledger/)集中保管存储、业务关联、决定、原会话、维护单和接任。顶层 `harness_tasks`、`harness_scope`、`harness_wave`、`harness_snapshot`、`harness_package` 也供原包与独立资格程序读取；[W2 回放](../../installation/maintenance-20261121-board/replay-wave-offline-repair-20261122.py)直接调用当时采用和等待的查询。 |
+| 委派、范围、采用、接续 | `harness.py`、`run_worker.py`、`context.py` | [任务账本](../../bin/task_ledger/)集中保管存储、业务关联、决定、原会话、维护单和接任。顶层 `harness_tasks`、`harness_scope`、`harness_wave`、`harness_snapshot`、`harness_package` 也供原包与独立资格程序读取。 |
 | 资料发现、维护观察、宿主 Hook | `harness_knowledge.py`、`harness_feedback.py`、`harness_hook.py`、`harness_context_hook.py`、`harness-hook.ps1`、`devin_context_hook.py` | 资产、Skill 和旧方法查询在 [workspace_queries](../../bin/workspace_queries/)。`workspace_files`供查询、运行器和独立检查解析工作区路径。 |
-| 科学独审与平台审核 | `review_job.py`、`review_adapter.py`、`review_capture.py`、`harness.py work-submit-batch` | [scientific_review](../../bin/scientific_review/)负责请求、意见、差异、预算和投递。[platform_review](../../bin/platform_review/)负责平台审核读取和获准根的送审。`production_review`也是既有工程验证调用的科学复审接口；`delivery_evidence`供[原件回放](../../installation/maintenance-20261121-board/replay-wave-delivery-20261122.py)读取保存、提交与读回事实。 |
-| 运行器、身份和容量 | `agent_runtime.py`、`collaboration_mcp.py`、`native_cli_capture.py`、`dsh_recovery_host.py`、`dsh_capacity_handoff.py` | `harness_hosts`按安装注册选择 [Claude 适配器](../../bin/native_hosts/claude_adapter.py)、`codex_adapter`、`devin_adapter` 和 `dsh_headless`。冻结波次方案直接指向 Codex 的实现，SCM 恢复资格脚本直接导入 Devin 的两个模块。`agent_base`、`codex_host`、`devin_acp`、`collaboration_tools`承接相应宿主协议；`dsh_capacity`、`dsh_auto_resume`、`execution_lease`也由[原故障资格程序](../../installation/maintenance-20261121-board/qualify-dsh-recovery-20261122.py)等安装工具调用。 |
+| 科学独审与平台审核 | `review_job.py`、`review_adapter.py`、`review_capture.py`、`harness.py work-submit-batch` | [scientific_review](../../bin/scientific_review/)负责请求、意见、差异、预算和投递。[platform_review](../../bin/platform_review/)负责平台审核读取和获准根的送审。`production_review`也是既有工程验证调用的科学复审接口；`delivery_evidence`用于读取保存、提交与读回事实。 |
+| 运行器、身份和容量 | `agent_runtime.py`、`collaboration_mcp.py`、`native_cli_capture.py`、`dsh_recovery_host.py`、`dsh_capacity_handoff.py` | `harness_hosts`按本机注册选择 [Claude 适配器](../../bin/native_hosts/claude_adapter.py)、`codex_adapter`、`devin_adapter` 和 `dsh_headless`。`agent_base`、`codex_host`、`devin_acp`、`collaboration_tools`承接相应宿主协议；`dsh_capacity`、`dsh_auto_resume`、`execution_lease`负责并发席位、恢复与单写锁。 |
 | DSH 原生插件与观察 | `dsh_native.mjs`、`dsh_packages.mjs` | 对话上下文、调用、写入权限和工具交付插件在 [dsh](../../bin/dsh/)。`dsh_goal.mjs`、`dsh_sse_diagnostics.mjs`供原生 Goal、停流资格驱动直接导入；`safe_diagnostics.mjs`与 Python 的`safe_diagnostics`分别用于相应宿主的诊断输出。 |
 | 数据 CLI 与本机工程 | `launch.py`、`env_run.py`、`lca_gate.py`、`repository.py` | [dataset_checks](../../bin/dataset_checks/)负责数据投影、引用及写入授权。`tiangong_cli_tool`、`local_check`、`utilities_tools`由宿主工具与安装验证直接导入。 |
 

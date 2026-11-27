@@ -108,11 +108,11 @@ export function buildTiangongInvocation(args, options = {}) {
   return commandInvocation(args, options);
 }
 
-export function executeTiangongCommand(args, options = {}, stdio = 'pipe') {
-  if (options.cliDir && !options.cliInstallation) return executeDevelopmentCommand(args, options, stdio);
+export function executeTiangongCommand(args, options = {}) {
+  if (options.cliDir && !options.cliInstallation) return executeDevelopmentCommand(args, options);
   const invocation = buildTiangongInvocation(args, options);
   const result = (options.spawnImpl ?? spawnSync)(invocation.command, invocation.args, {
-    ...options.spawnOptions, stdio, encoding: 'utf8', shell: false,
+    ...options.spawnOptions, stdio: 'pipe', encoding: 'utf8', shell: false,
   });
   if (result.error) {
     if (result.error.code === 'ENOENT') throw new Error(`${missingCliMessage} Selected command: ${invocation.command}`);
@@ -123,9 +123,7 @@ export function executeTiangongCommand(args, options = {}, stdio = 'pipe') {
 }
 
 export function runTiangongCommand(args, options = {}) {
-  const stdin = options.spawnOptions?.input === undefined ? 'inherit' : 'pipe';
-  const stdio = [stdin, options.stdoutWrite ? 'pipe' : 'inherit', options.stderrWrite ? 'pipe' : 'inherit'];
-  const result = executeTiangongCommand(args, options, stdio);
+  const result = executeTiangongCommand(args, options);
   if (result.stdout) (options.stdoutWrite ?? ((text) => process.stdout.write(text)))(result.stdout);
   if (result.stderr) (options.stderrWrite ?? ((text) => process.stderr.write(text)))(result.stderr);
   if (typeof result.status === 'number') return result.status;

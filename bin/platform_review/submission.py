@@ -317,7 +317,8 @@ class NativeReview:
         self.root, self.home = root, home
 
     def matches(self, selection):
-        accounts = json.loads((self.root/'.control/accounts.json').read_bytes())
+        from env_run import load_accounts_config
+        accounts, _ = load_accounts_config(self.root)
         return selection['project']==accounts['project_ref'] and selection['account']==accounts['editor']['user_id']
 
     def pending_dataset_writes(self, objects, native):

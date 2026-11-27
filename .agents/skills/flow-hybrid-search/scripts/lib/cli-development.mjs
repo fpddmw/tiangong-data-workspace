@@ -584,7 +584,7 @@ function ensureLocalCliBuild(invocation, options) {
   runLocalPreparationStep(invocation, ['run', 'build'], 'build', options);
 }
 
-export function executeTiangongCommand(tiangongArgs, options = {}, stdio = 'pipe') {
+export function executeTiangongCommand(tiangongArgs, options = {}) {
   const invocation = buildTiangongInvocation(tiangongArgs, options);
   assertSupportedToolchain(options);
   ensureLocalCliBuild(invocation, options);
@@ -595,7 +595,7 @@ export function executeTiangongCommand(tiangongArgs, options = {}, stdio = 'pipe
   const spawnImpl = options.spawnImpl ?? spawnSync;
   const result = spawnImpl(invocation.command, invocation.args, {
     ...options.spawnOptions,
-    stdio,
+    stdio: 'pipe',
     encoding: 'utf8',
     shell: false,
   });
@@ -616,9 +616,7 @@ export function executeTiangongCommand(tiangongArgs, options = {}, stdio = 'pipe
 export function runTiangongCommand(tiangongArgs, options = {}) {
   const stdoutWrite = options.stdoutWrite ?? ((text) => process.stdout.write(text));
   const stderrWrite = options.stderrWrite ?? ((text) => process.stderr.write(text));
-  const input = options.spawnOptions?.input === undefined ? 'inherit' : 'pipe';
-  const result = executeTiangongCommand(tiangongArgs, options,
-    [input, options.stdoutWrite ? 'pipe' : 'inherit', options.stderrWrite ? 'pipe' : 'inherit']);
+  const result = executeTiangongCommand(tiangongArgs, options);
 
   if (result.stdout) {
     stdoutWrite(result.stdout);

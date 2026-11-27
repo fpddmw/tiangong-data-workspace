@@ -13,6 +13,7 @@ import tempfile
 
 from dataset_checks.projection import SCHEMA as PROJECTION_SCHEMA, SUMMARY_FORMAT, exchange_changes, markdown, project
 from dataset_checks.references import KINDS, reference_rows, select_references
+from env_run import runtime_config_path
 from workspace_files import sha256_file
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -82,8 +83,7 @@ def runtime(root=None):
     data = json_object(result.stdout)
     if result.returncode or data.get('schema') != 'tiangong-lca.cli-runtime-descriptor.v1':
         return {'status': 'unavailable', 'exit_code': result.returncode}
-    path = root / '.control/runtime.json'
-    spec = json.loads(path.read_text(encoding='utf-8'))
+    path = runtime_config_path(root)
     observed = {'platform': data['platform'], 'package_version': data['package']['version'],
                 'content_sha256': data['content_sha256'], 'node_version': data['node']['version'],
                 'node_sha256': data['node']['sha256']}
@@ -190,7 +190,7 @@ def local_doctor(root: Path, *, refresh: bool = True) -> dict:
     if not refresh:
         if previous:
             try:
-                bindings = ((root / '.control/runtime.json', previous.get('runtime', {}).get('config_sha256')),
+                bindings = ((runtime_config_path(root), previous.get('runtime', {}).get('config_sha256')),
                             (root / 'skills-lock.json', previous.get('skills', {}).get('lock_sha256')))
                 changed = (candidate_entry != previous.get('candidate_entry_sha256')
                            or any(expected is not None and (not source.is_file() or sha256_file(source) != expected)
@@ -260,7 +260,8 @@ def doctor(live):
     report = local_doctor(ROOT)
     # The live check is opt-in and its receipt never enters the startup cache.
     if live and report.get('editor_read_and_preflight_identity') == 'configuration_present_unverified':
-        accounts = json.loads((ROOT / '.control/accounts.json').read_text())
+        from env_run import load_accounts_config
+        accounts, _ = load_accounts_config(ROOT)
         receipt = invoke(['auth', 'identity-receipt', '--expected-project-ref', accounts['project_ref'],
                           '--expected-user-id', accounts['editor']['user_id'], '--json'], ROLE)
         proof = json_object(receipt.stdout).get('data', {}).get('receipt', {}).get('assertions', {})

@@ -1,0 +1,17 @@
+{
+  "schema": "data-workspace.launchers.v1",
+  "note": "Copy to .control/runtime.local.json (or .control/runtime.json, both gitignored) and fill paths for this machine. Keep workspace tools workspace-relative; external_materials may hold machine-local paths to non-Git restricted/reference datasets.",
+  "node": ".toolchain/node/<version>/bin/node",
+  "cli": ".toolchain/cli/<version>/node_modules/@tiangong-lca/cli/bin/tiangong-lca.js",
+  "foundry_runtime_cli": "",
+  "ai_cli": "",
+  "manifest": "runtime-manifests/<foundry-manifest-sha256>.json",
+  "manifest_sha256": "<foundry-manifest-sha256>",
+  "programmatic_worker": null,
+  "cache": ".runtime",
+  "foundry_workspace": "work",
+  "external_materials": {
+    "ef31_source_package": "",
+    "local_reference_benchmarks": ""
+  }
+}

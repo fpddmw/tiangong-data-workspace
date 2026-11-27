@@ -228,12 +228,26 @@ class RepositoryTests(unittest.TestCase):
         for path in ("projects/example/candidate.json", "materials/source.pdf",
                      "research/findings.md", "reports/check.json", "work/runs/input.json",
                      "archive/evidence.json", "outputs/export.csv", "installation/README.md",
-                     "runtime-manifests/tool.json", "runtime-installation.json", "skills-lock.json",
-                     ".control/policy.json", ".control/agent.json", ".control/runtime.json",
+                     "runtime-manifests/tool.json", "skills-lock.json",
+                     ".control/policy.json", ".control/agent.json", ".control/accounts.template.json",
+                     ".control/runtime.template.json", ".control/programmatic-worker.template.json",
                      "projects/tool/Cargo.lock", "projects/tool/uv.lock", "projects/tool/yarn.lock",
                      "projects/tool/poetry.lock"):
             self.write(path, "safe retained material")
         self.assertEqual(self.invoke("check")[0], 0)
+
+    def test_machine_local_runtime_and_installed_skills_are_rejected(self):
+        for path in (".control/runtime.json", ".control/runtime.local.json",
+                     ".control/accounts.json", ".control/accounts.local.json",
+                     "runtime-installation.json", ".agents/skills/example/SKILL.md"):
+            self.write(path, "machine local binding")
+        code, value, _ = self.invoke("check")
+        self.assertEqual(code, 1)
+        self.assertEqual({item["path"] for item in value["issues"]},
+                         {".control/runtime.json", ".control/runtime.local.json",
+                          ".control/accounts.json", ".control/accounts.local.json",
+                          "runtime-installation.json", ".agents/skills/example/SKILL.md"})
+        self.assertEqual({item["code"] for item in value["issues"]}, {"local-state"})
 
     def test_native_sidecars_locks_and_sessions_are_never_read(self):
         paths = ("projects/task/state.sqlite", "projects/task/state.sqlite-wal",
